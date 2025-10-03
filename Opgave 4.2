@@ -1,0 +1,11 @@
+tillid_ola2 %>%
+  slice(17:119) %>% 
+  summarise(
+    gennemsnit = mean(`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`, na.rm = TRUE)
+  )
+
+tillid_ola2 %>%
+  slice(17:119) %>% 
+  summarise(
+    gennemsnit = mean(`Anser det som fornuftigt at spare op i den nuværende økonomiske situation`, na.rm = TRUE)
+  )
