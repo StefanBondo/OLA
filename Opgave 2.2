@@ -1,0 +1,9 @@
+DIQ3 <- c(di_tal_2025Q3$`Familiens økonomiske situation i dag, sammenlignet med for et år siden`+
+            di_tal_2025Q3$`Danmarks økonomiske situation i dag, sammenlignet med for et år siden`+
+            di_tal_2025Q3$`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`+
+            di_tal_2025Q3$`Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.`)/4
+
+DIQ3ksam <- sum(DIQ3)/1
+
+DI3kpfv <- 2.1240584+0.2049112*DIQ3ksam
+DI3kpfv
