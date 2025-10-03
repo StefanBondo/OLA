@@ -1,0 +1,40 @@
+cor.test(di_tal_2015$gennemsnit,OLA_2_realvækst$real_vækst_pct)
+summary(lm_di2025)
+
+
+lm_di2025 <- lm(OLA_2_realvækst$real_vækst_pct ~ 
+                  di_tal_2025$familiens_okonomiske_situation_i_dag_sammenlignet_med_for_et_ar_siden+
+                  di_tal_2025$danmarks_okonomiske_situation_i_dag_sammenlignet_med_for_et_ar_siden+
+                  di_tal_2025$anskaffelse_af_storre_forbrugsgoder_fordelagtigt_for_ojeblikket+
+                  di_tal_2025$anskaffelse_af_storre_forbrugsgoder_inden_for_de_naeste_12_mdr,
+                data = di_tal_2025)
+
+
+ggplot(di_tal_2016, aes(x = tid)) +
+  geom_col(aes(y = realvækst$real_vækst_pct * scale_factor,
+               fill = "Årlig realvækst (pct.)")) +
+  geom_line(aes(y = gennemsnit, colour = "DI's indikator"), linewidth = 0.6) +
+  geom_line(aes(y = dst_tal_2016$gennemsnit, colour = "DST's indikator"), linewidth = 0.6) +
+  scale_y_continuous(
+    name = "DI's & DST forbrugertillidsindikator (nettotal)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Årlig realvækst (pct.)")
+  ) +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%y"
+  ) +
+  scale_fill_manual(values = "skyblue", name = NULL) +
+  scale_color_manual(
+    values = c("DI's indikator" = "grey30", "DST's indikator" = "red"),
+    name = NULL
+  ) +
+  labs(
+    x = NULL,
+    title = "DI's indikator, DST indikator og realvækst i privatforbrug",
+    caption = "Kilde: Danmarks Statistik"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0)
