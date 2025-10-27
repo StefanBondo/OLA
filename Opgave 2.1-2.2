@@ -1,0 +1,50 @@
+install.packages("pls")
+library(pls)
+
+# 2.1
+pcr.fit <- pcr(forbrug_mikro$real_vaekst_pct ~ 
+                 tillid_mikro$`Familiens økonomiske situation i dag, sammenlignet med for et år siden`+
+                 tillid_mikro$`Familiens økonomiske  situation om et år, sammenlignet med i dag`+
+                 tillid_mikro$`Danmarks økonomiske situation i dag, sammenlignet med for et år siden`+
+                 tillid_mikro$`Danmarks økonomiske situation om et år, sammenlignet med i dag`+
+                 tillid_mikro$`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`+
+                 tillid_mikro$`Priser i dag, sammenlignet med for et år siden`+
+                 tillid_mikro$`Priser om et år, sammenlignet med i dag`+
+                 tillid_mikro$`Arbejdsløsheden om et år, sammenlignet med i dag`+
+                 tillid_mikro$`Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.`+
+                 tillid_mikro$`Anser det som fornuftigt at spare op i den nuværende økonomiske situation`+
+                 tillid_mikro$`Regner med at kunne spare op i de kommende 12 måneder`+
+                 tillid_mikro$`Familiens økonomiske situation lige nu: kan spare/penge slår til/ bruger mere end man tjener`,,
+               data = tillid_mikro, scale = TRUE,
+               validation = "CV")
+
+summary(pcr.fit)
+
+loadings.pcr.fit <- pcr.fit$loadings
+w.indicators.1 <- loadings.pcr.fit[3:14]^2
+sum(w.indicators.1)
+
+
+# 2.2
+load_df <- as.data.frame(loadings(pcr.fit))
+load_df$variable <- rownames(load_df)
+
+# Sørg for at kolonnen er numerisk
+load_df <- as.numeric(load_df)
+
+# Sortér efter absolut værdi og vælg de tre største
+top3 <- load_df[order(abs(load_df$Comp.1), decreasing = TRUE), ][1:3, c("variable", "Comp.1")]
+top3
+
+L <- as.matrix(loadings(pcr.fit))
+
+# 2. Lav et data frame med variabelnavne + første komponent
+load_df <- data.frame(
+  variable = rownames(L),
+  Comp1 = as.numeric(L[, 1]),
+  row.names = NULL
+)
+
+# 3. Find de tre største (absolutte) loadings
+top3 <- load_df[order(abs(load_df$Comp1), decreasing = TRUE), ][1:3, ]
+top3
