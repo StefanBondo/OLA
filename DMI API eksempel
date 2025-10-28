@@ -1,0 +1,34 @@
+library(httr)
+library(stringr)
+library(jsonlite)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+stationid="06074"
+windirparam="wind_dir_pash1h"
+winforceparam = "wind_speed_pash1h"
+
+##https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?stationId=05185&api-key=
+##https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?datetime=2018-02-12T00:00:00Z/2018-03-18T00:00:00Z
+##https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?parameterId=pressure_at_sea
+
+##Variabler til Query##
+ak="67c70653-0af3-419d-a40e-c09392803a77"
+sid="05185"
+pid="pressure_at_sea"
+baseurl="https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?"
+fd="2022-11-14T00:00:00Z"
+td="2022-11-21T00:00:00Z"
+
+
+##Query URL##
+varurl=paste0("parameterId=",pid,"&stationId=",sid,"&datetime=",fd,"/",td,"&api-key=",ak)
+totalurl=paste0(baseurl,varurl)
+totalurl
+
+resreq <- httr::GET(totalurl)
+resreq$status_code
+resraw <- httr::content(resreq, type="text")
+resdf <- fromJSON(resraw)
+
