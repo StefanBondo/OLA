@@ -18,8 +18,8 @@ ak="67c70653-0af3-419d-a40e-c09392803a77"
 sid="06074"
 pid="wind_speed_past1h"
 baseurl="https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?"
-fd="2022-11-14T00:00:00Z"
-td="2022-11-21T00:00:00Z"
+fd="2023-10-19T00:00:00Z"
+td="2023-10-23T00:00:00Z"
 
 
 ##Query URL##
@@ -31,3 +31,7 @@ resreq <- httr::GET(totalurl)
 resreq$status_code
 resraw <- httr::content(resreq, type="text")
 resdf <- fromJSON(resraw)
+
+##"parameterId=",pid,"&stationId=",sid,"&datetime=",fd,"/",td,"&api-key=",ak
+
+test <- as.data.frame(resdf[2])
