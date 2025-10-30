@@ -33,5 +33,20 @@ resraw <- httr::content(resreq, type="text")
 resdf <- fromJSON(resraw)
 
 ##"parameterId=",pid,"&stationId=",sid,"&datetime=",fd,"/",td,"&api-key=",ak
-
+print(resdf)
 test <- as.data.frame(resdf[2])
+
+df <- test %>%
+  tidyr::unnest_wider(features.properties) %>%   # folder liste-kolonnen ud til normale kolonner
+  select(observed, value) %>%
+  mutate(
+    observed = ymd_hms(observed, tz = "UTC"),
+    value    = as.numeric(value)
+  )
+
+library(ggplot2)
+
+ggplot(df, aes(observed, value)) +
+  geom_line() +
+  labs(x = "Tid", y = "Vindhastighed (m/s)")
+
