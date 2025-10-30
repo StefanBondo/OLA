@@ -1,0 +1,102 @@
+library(httr)
+library(stringr)
+library(jsonlite)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+##Anholt 06079
+##Aarhus 06074
+
+station_aar="06074"
+station_an="06079"
+windirparam="wind_dir_past1h"
+winforceparam = "wind_speed_past1h"
+
+##https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?stationId=05185&api-key=
+##https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?datetime=2018-02-12T00:00:00Z/2018-03-18T00:00:00Z
+##https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?parameterId=pressure_at_sea
+
+##Variabler til Query 06074##
+ak="67c70653-0af3-419d-a40e-c09392803a77"
+sid_aar="06074"
+pid="wind_speed_past1h"
+baseurl="https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?"
+fd="2023-10-01T00:00:00Z"
+td="2023-10-31T00:00:00Z"
+vind="wind_dir_past1h"
+
+##Query URL##
+varurl <- paste0(
+  "parameterId=", pid,
+  "&stationId=", sid_aar,
+  "&datetime=", fd, "/", td,
+  "&api-key=", ak
+)
+totalurl=paste0(baseurl, varurl)
+totalurl
+
+resreq <- httr::GET(totalurl)
+resreq$status_code
+resraw <- httr::content(resreq, type="text")
+resdf <- fromJSON(resraw)
+
+test <- as.data.frame(resdf[2])
+
+##Variabler til Query 06079##
+ak="67c70653-0af3-419d-a40e-c09392803a77"
+sid_an="06079"
+pid="wind_speed_past1h"
+baseurl_2="https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?"
+fd="2023-10-01T00:00:00Z"
+td="2023-10-31T00:00:00Z"
+vind="wind_dir_past1h"
+
+##Query URL##
+varurl_2 <- paste0(
+  "parameterId=", pid,
+  "&stationId=", station_an,
+  "&datetime=", fd, "/", td,
+  "&api-key=", ak
+)
+totalurl_2=paste0(baseurl_2, varurl_2)
+totalurl_2
+
+resreq_2 <- httr::GET(totalurl_2)
+resreq_2$status_code
+resraw_2 <- httr::content(resreq_2, type="text")
+resdf_2 <- fromJSON(resraw_2)
+
+test_2 <- as.data.frame(resdf_2[2])
+
+
+testsamlet <- bind_rows(test_2, test)
+
+ggplot(testsamlet, aes(observed, value)) +
+  geom_line() +
+  labs(x = "Tid", y = "Vindhastighed (m/s)", colour = stationid)
+
+
+# hvis dit objekt hedder resdf efter fromJSON():
+df <- testsamlet %>%
+  tidyr::unnest_wider(features.properties) %>%        # fold liste-kolonnen ud
+  transmute(
+    stationId   = as.character(stationId),
+    observed    = ymd_hms(observed, tz = "UTC"),
+    value       = as.numeric(value),
+    parameterId = parameterId
+  ) %>%
+  filter(parameterId == "wind_speed_past1h") %>%       # kun vindhastighed
+  distinct(stationId, observed, .keep_all = TRUE) %>%  # fjern evt. dubletter
+  arrange(stationId, observed)
+
+ggplot(df, aes(x = observed, y = value, color = stationId, group = stationId)) +
+  geom_line() +
+  labs(
+    x = "Tid (UTC)",
+    y = "Vindhastighed (m/s)",
+    color = "Station",
+    caption = "Source: DMI Open Data API"
+  ) +
+  theme_minimal()
+
