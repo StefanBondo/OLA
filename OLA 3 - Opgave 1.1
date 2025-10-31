@@ -1,0 +1,29 @@
+com2 <- combn(tillid_mikro[1,3:ncol(tillid_mikro)],1)
+
+
+
+combn(tillid_mikro[1,3:ncol(tillid_mikro)],2)
+combn(tillid_mikro[2,3:ncol(tillid_mikro)],2)
+combn(tillid_mikro[3,3:ncol(tillid_mikro)],2)
+combn(tillid_mikro[4,3:ncol(tillid_mikro)],2)
+combn(tillid_mikro[i,3:ncol(tillid_mikro)],2)
+
+y <- colMeans(combn(as.numeric(tillid_mikro[3,3:ncol(tillid_mikro)]),2))
+
+y
+comliste2 <- list()
+
+
+for (i in seq_len(nrow(tillid_mikro_negativ))) {
+  kvartal <- as.numeric(tillid_mikro_negativ[i, 3:ncol(tillid_mikro_negativ), drop = FALSE])
+  com2 <- combn(kvartal, 1, simplify = FALSE)
+  comliste[i] <- list(com2)
+}
+
+for (i in seq_len(nrow(tillid_mikro_negativ))) {
+  x <- as.numeric(tillid_mikro_negativ[i, 3:ncol(tillid_mikro_negativ), drop = FALSE])
+  combs_all <- unlist(
+    lapply(1:length(x), function(k) combn(x, k, simplify = FALSE)))
+  recursive = FALSE
+comliste2[i] <- list(combs_all)
+}
