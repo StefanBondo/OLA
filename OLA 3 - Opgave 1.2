@@ -1,0 +1,37 @@
+spm_idx    <- 3:14
+spm_navne  <- names(tillid_mikro_negativ)[spm_idx]
+
+
+combo_labels <- map2_dfr(
+  .x = lapply(1:length(spm_idx), function(k) combn(spm_idx, k, simplify = FALSE)),
+  .y = 1:length(spm_idx),
+  .f = function(lst, k) {
+    tibble(
+      k       = k,
+      komb_nr = seq_along(lst),
+      col_idx = lst
+    )
+  }
+) %>%
+  mutate(
+    spm_navne = map(col_idx, ~ spm_navne[match(.x, spm_idx)]),  # sikre korrekt mapping
+    label     = map_chr(spm_navne, ~ paste(.x, collapse = " + "))
+  )
+
+
+r2_fun <- function(df) {
+  if (nrow(df) < 3 || var(df$mean, na.rm = TRUE) == 0) return(NA_real_)
+  summary(lm(real_vaekst_pct ~ mean, data = df))$r.squared
+}
+
+
+r2_resultater_negativ <- merged_negativ %>%
+  group_by(k, komb_nr) %>%                                # ← vigtig: både k og komb_nr
+  summarise(R2 = r2_fun(cur_data()), .groups = "drop") %>%
+  inner_join(combo_labels, by = c("k", "komb_nr")) %>%
+  arrange(desc(R2))
+
+vinder <- r2_resultater_negativ %>% slice(1)
+vinder$k; vinder$komb_nr; vinder$label
+
+vinder$spm_navne[[1]]
