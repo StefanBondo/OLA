@@ -1,0 +1,7 @@
+Xvars <- colnames(pcr.fit$model)[-1]
+newX_q3_2025 <- tillid_ola2[119, Xvars, drop = FALSE]
+
+pred_q3_2025 <- as.numeric(predict(pcr.fit, ncomp = 2, newdata = newX_q3_2025))
+
+cat("Forudsagt årlig realvækst i husholdningernes forbrug, 3. kvartal 2025:",
+    round(pred_q3_2025, 2), "%\n")
