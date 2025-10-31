@@ -1,0 +1,23 @@
+forudsig <- df %>%
+  mutate(qtr = as.yearqtr(kvartal, "%YQ%q")) %>%
+  filter(qtr <= as.yearqtr("2025Q2", "%YQ%q")) %>%
+  transmute(real_vaekst_pct,
+            gennemsnit) %>%
+  filter(is.finite(real_vaekst_pct), is.finite(gennemsnit))
+
+mod <- lm(real_vaekst_pct ~ gennemsnit, data = forudsig)
+
+
+ny <- data.frame(gennemsnit = 10.122222)
+pred <- predict(mod, newdata = ny, interval = "prediction", level = 0.80)
+
+
+mean_q4 <- mean(tillid_ola21$gennemsnit, na.rm = TRUE)
+mean_q4
+
+ny <- data.frame(
+  kvartal = c("2025Q3", "2025Q4"),
+  gennemsnit = c(10.122222, mean_q4)
+)
+pred <- predict(mod, newdata = ny, interval = "prediction", level = 0.80)
+cbind(ny, round(pred, 3))
