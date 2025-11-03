@@ -1,0 +1,127 @@
+#Opgave 3.1 – Forudsigelse 
+#Lav en Machine Learning model, der med afsæt i DST’s forbrugertillidsindikator, kan forudsige om julehandlen i 2025 er større end i 2024. 
+
+#Først har vi hivet data ud fra DST med hvor vi har detailhandel fra november og december hvor vi efterfølgende plusser dem så vi får julehandelen for hvert år
+
+julehandel_år <- Julehandel %>%
+  # Lav en kolonne med kun år (fx "2000" fra "2000M11")
+  mutate(År = substr(ÅR, 1, 4)) %>%
+  
+  # Gruppér efter år
+  group_by(År) %>%
+  
+  # Læg november + december sammen
+  summarise(Julehandel_sum = sum(`Sæsonkorrigeret mængdeindeks`, na.rm = TRUE)) %>%
+  
+  # Sortér efter år
+  arrange(År)
+
+# Se resultatet
+print(julehandel_år)
+
+
+#Nu skal vi også have det for dst forbrugertillidindikator
+dst_forbrugertillid_år <- Tillidsundersøgelse %>%
+  # Lav kolonne med kun år (fx "2000" fra "2000M11")
+  mutate(År = substr(ÅR, 1, 4)) %>%
+  
+  # Filtrér kun november (M11) og december (M12)
+  filter(grepl("M11|M12", ÅR)) %>%
+  
+  # Gruppér efter år
+  group_by(År) %>%
+  
+  # Læg november + december sammen
+  summarise(dst_forbrugertillid_sum = sum(`Forbrugertillidsindikatoren`, na.rm = TRUE)) %>%
+  
+  # Sortér efter år
+  arrange(År)
+
+#Kører left_join for at samle i et dataframe
+Dst_og_julehandel <- dst_forbrugertillid_år %>% 
+  left_join(julehandel_år, by = c("År" = "År"))
+
+
+
+#Beregning af dummmy variabel som beskriver om julehandel steg eller faldt i forhold til sidste år
+
+# 2️⃣ Tjek kolonnenavne for at finde den, hvor julehandlen står
+colnames(Dst_og_julehandel)
+
+# 3️⃣ Antag at kolonnen med julehandel hedder fx 'Julehandel'
+# Lav dummyvariabel: 1 = steget, 0 = faldet
+
+Dst_og_julehandel <- Dst_og_julehandel %>%
+  arrange(År) %>%                                # Sørg for at data står i rigtig rækkefølge
+  mutate(
+    julehandel_diff = Julehandel_sum - lag(Julehandel_sum),
+    julehandel_steg = ifelse(julehandel_diff > 0, 1, 0)
+  )
+
+
+#lav machine learning model herunder simpel logisstik regression
+
+# ------------------------------------------------------------
+# LOGISTISK REGRESSION – Forudsig om julehandlen stiger
+# ------------------------------------------------------------
+
+# 1️⃣ Træn en logistisk regressionsmodel
+
+log_model <- glm(julehandel_steg ~ dst_forbrugertillid_sum,
+                 data = Dst_og_julehandel,
+                 family = binomial())
+
+# 2️⃣ Se modelresultaterne
+summary(log_model)
+
+# 3️⃣ Beregn sandsynligheder for hvert år
+ny_2025 <- data.frame(dst_forbrugertillid_sum = -22.4)
+
+# Forudsig sandsynligheden for at julehandlen stiger
+pred_2025 <- predict(log_model, newdata = ny_2025, type = "response")
+
+pred_2025
+#0.3990127 
+
+#Den forudsiger den proentcentmæssige chance for at den stiger
+cat("Sandsynlighed for at julehandlen stiger i 2025:", round(pred_2025 * 100, 2), "%\n")
+#Sandsynlighed for at julehandlen stiger i 2025: 39.9 %
+
+#Tydeligør et svar via en if else funktion til at printe et pænt svar
+if (pred_2025 > 0.5) {
+  cat("👉 Modellen forudsiger, at julehandlen i 2025 bliver STØRRE end i 2024.\n")
+} else {
+  cat("👉 Modellen forudsiger, at julehandlen i 2025 bliver MINDRE end i 2024.\n")
+}
+#👉 Modellen forudsiger, at julehandlen i 2025 bliver MINDRE end i 2024.
+
+#Vi har nu fået den til at forusige et år men for at teste validiteten vil vi have den til forudsige alle år og samle det hele i confusionsmatrix
+#confusion matrix
+library(caret)
+
+# 1) Træn med na.action = na.exclude (så 'predict' kan padde NAs tilbage)
+log_model <- glm(julehandel_steg ~ dst_forbrugertillid_sum,
+                 data = Dst_og_julehandel,
+                 family = binomial(),
+                 na.action = na.exclude)
+
+# 2) Forudsig – nu får du en vektor på 25 med NA hvor rækker blev droppet
+Dst_og_julehandel$forudsigelse <- predict(log_model, type = "response")
+
+# 3) Klassifikation (beholder NA hvor input var NA)
+Dst_og_julehandel$model_klassifikation <- ifelse(Dst_og_julehandel$forudsigelse > 0.5, 1, 0)
+
+# 4) Confusion matrix – filtrér NA væk for evaluering
+cm_df <- subset(Dst_og_julehandel, !is.na(model_klassifikation) & !is.na(julehandel_steg))
+
+confusionMatrix(
+  as.factor(cm_df$model_klassifikation),
+  as.factor(cm_df$julehandel_steg),
+  positive = "1"
+)
+
+
+
+
+
+
