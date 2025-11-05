@@ -1,0 +1,117 @@
+install.packages("rvest")
+library(rvest)
+library(httr)
+library(dplyr)
+
+#En bil på første side
+
+startlink <- "https://www.bilbasen.dk/brugt/bil/volvo?fuel=1&includeengroscvr=true&includeleasing=false"
+rawres<- GET(url=startlink)
+rawres$status_code
+rawcontent <- httr::content(rawres,as="text")
+
+#Transform text til HTML nodes
+page <- read_html(rawcontent)
+
+
+#tag liste
+ptag=".Listing_price__6B3kE"
+dettag ="[class^='Listing_details']"
+dettagitem ="[class^='ListingDetails_listItem']"
+mmtag="[class^='Listing_makeModel']"
+desctag="[class^='Listing_description']"
+loctag="[class^='Listing_location']"
+
+#Dataframe til opsamling
+cn=c("price", "details","Makemodel","props","desc","location","link","carid","scrapdate")
+colldf=as.data.frame(matrix(data=NA,nrow = 0, ncol = 9))
+colnames(colldf)=cn
+
+#extract car elements from page
+carlist <- page %>% html_elements("article")
+
+for(car in carlist) {
+  price <- car %>% html_element(ptag) %>% html_text()
+  #details <- car %>% html_element(dettag) %>% html_text()
+  details2 <- car %>% html_elements(dettagitem) %>% html_text() %>% paste0(collapse = "_") # denne printer det ud i vektorer så det ser pænnere ud
+  makemodel <- car %>% html_element(mmtag) %>% html_text()
+  description <- car %>% html_element(desctag) %>% html_text()
+  location <- car %>% html_element(loctag) %>% html_text()
+  tmpdf <- data.frame(price,details2,makemodel,description,location,Sys.time())
+}
+
+#### Alle biler på Resten af siden
+
+library(httr)
+library(rvest)
+library(dplyr)
+
+startlink <- "https://www.bilbasen.dk/brugt/bil/volvo?fuel=1&includeengroscvr=true&includeleasing=false"
+
+rawres <- GET(url = startlink)
+rawcontent <- httr::content(rawres, as = "text")
+page <- read_html(rawcontent)
+
+# CSS-selectors
+ptag <- ".Listing_price__6B3kE"
+dettagitem <- "[class^='ListingDetails_listItem']"
+mmtag <- "[class^='Listing_makeModel']"
+desctag <- "[class^='Listing_description']"
+loctag <- "[class^='Listing_location']"
+
+# Dataframe til opsamling
+cn <- c("price", "details", "makemodel", "description", "location", "scrapdate")
+colldf <- data.frame(matrix(NA, ncol = length(cn)))
+colnames(colldf) <- cn
+
+# Hent alle biler på siden
+carlist <- page %>% html_elements("article")
+
+for (i in seq_along(carlist)) {
+  car <- carlist[[i]]
+  price <- car %>% html_element(ptag) %>% html_text(trim = TRUE)
+  details <- car %>% html_elements(dettagitem) %>% html_text(trim = TRUE) %>% paste(collapse = " | ")
+  makemodel <- car %>% html_element(mmtag) %>% html_text(trim = TRUE)
+  description <- car %>% html_element(desctag) %>% html_text(trim = TRUE)
+  location <- car %>% html_element(loctag) %>% html_text(trim = TRUE)
+  
+  tmpdf <- data.frame(price, details, makemodel, description, location, Sys.time())
+  colldf <- rbind(colldf, tmpdf)
+}
+
+# Fjern første tomme række
+colldf <- colldf[-1, ]
+View(colldf)
+
+
+
+##### Flere sider
+all_pages <- data.frame()
+
+for (page_num in 2:7) {
+  url <- paste0("https://www.bilbasen.dk/brugt/bil/volvo?fuel=1&includeengroscvr=true&includeleasing=false&page=", page_num)
+  rawres <- GET(url)
+  page <- read_html(httr::content(rawres, as = "text"))
+  
+  carlist <- page %>% html_elements("article")
+  
+  for (car in carlist) {
+    price <- car %>% html_element(ptag) %>% html_text(trim = TRUE)
+    details <- car %>% html_elements(dettagitem) %>% html_text(trim = TRUE) %>% paste(collapse = " | ")
+    makemodel <- car %>% html_element(mmtag) %>% html_text(trim = TRUE)
+    description <- car %>% html_element(desctag) %>% html_text(trim = TRUE)
+    location <- car %>% html_element(loctag) %>% html_text(trim = TRUE)
+    tmpdf <- data.frame(price, details, makemodel, description, location, Sys.time())
+    all_pages <- rbind(all_pages, tmpdf)
+  }
+}
+
+View(all_pages)
+
+
+#Rensning af frame
+all_pages_clean <- all_pages %>%
+  distinct(makemodel, price, location, .keep_all = TRUE)
+
+
+nextlink <- "https://www.bilbasen.dk/brugt/bil/volvo?fuel=1&includeengroscvr=true&includeleasing=false&page=2"
