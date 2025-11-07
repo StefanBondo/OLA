@@ -21,19 +21,20 @@ pcr.fit <- pcr(forbrug_mikro$real_vaekst_pct ~
 summary(pcr.fit)
 
 loadings.pcr.fit <- pcr.fit$loadings
-w.indicators.1 <- loadings.pcr.fit[3:14]^2
+w.indicators.1 <- loadings.pcr.fit[1:12]^2
 sum(w.indicators.1)
 
 
 # 2.2
-load_df <- as.data.frame(loadings(pcr.fit))
-load_df$variable <- rownames(load_df)
+top_vægte_df <- data.frame(
+  spørgsmål = paste("Spørgsmål", 1:length(top_vægte)),
+  Comp1 = top_vægte
+)
 
-# Sørg for at kolonnen er numerisk
-load_df <- as.numeric(load_df)
+top3 <- top_vægte_df %>%
+  arrange(desc(abs(Comp1))) %>%
+  slice_head(n = 3)
 
-# Sortér efter absolut værdi og vælg de tre største
-top3 <- load_df[order(abs(load_df$Comp.1), decreasing = TRUE), ][1:3, c("variable", "Comp.1")]
 top3
 
 L <- as.matrix(loadings(pcr.fit))
