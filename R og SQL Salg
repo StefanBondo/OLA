@@ -1,0 +1,227 @@
+##### RSTUDIO
+
+library(DBI)
+library(RMariaDB)
+
+Sys.getenv("localpw")
+
+con <- dbConnect(MariaDB(),
+                 host ="localhost",
+                 db = "world",
+                 user = "root",
+                 port = 3306,
+                 password = Sys.getenv("localpw")
+                 )
+getwd()
+
+#Få ind i SQL/Dbeaver
+query = "Select ct.name, countrycode,sum(ci.population)/ct.population urb from city ci, country ct
+where ci.CountryCode=ct.Code
+group by countrycode
+order by 3 desc"
+
+df=dbGetQuery(con,query)
+
+
+query1 = "select * from country;"
+query2 = "select * from city;"
+
+df_land <- dbGetQuery(con,query1)
+df_by <- dbGetQuery(con,query2)
+
+library(dplyr)
+dftotal <- left_join(df_by,df_land,by=c("CountryCode"="Code"))
+
+
+dfurb <- dftotal %>% 
+  group_by(CountryCode) %>%
+  mutate(urbpr=sum(Population.x)/Population.y) %>%
+  select(CountryCode, Name.y, urbpr) %>%
+  ungroup()
+
+View(dfurb)
+
+
+
+library(DBI)
+library(RMariaDB)
+library(dplyr)
+library(lubridate)
+
+
+# forbindelse
+con <- dbConnect(MariaDB(),
+                 host="localhost",
+                 db="mynewNorthWind",
+                 user="root",
+                 password=Sys.getenv("localpw")
+)
+
+
+df=mtcars
+dbWriteTable(con,"dftest",df)
+
+#Kunder med højeste totale salg
+queryst="select c.companyname as fullname, sum(od.quantity * od.unitprice) as salg
+from orders o, customers c, order_details od
+where o.customerid = c.customerid
+and o.orderid=od.orderid
+group by c.companyname
+order by salg desc;"
+
+#Produkter købt i en given periode fra forskellige kunder
+query_2nd = 'select c.companyname as fullname, sum(od.quantity * od.unitprice) as salg
+from orders o, customers c, order_details od
+where o.customerid = c.customerid
+and o.orderid=od.orderid
+and o.orderdate between "1996-07-04" and "1996-07-11"
+group by c.companyname
+order by salg desc'
+
+df1 <- dbGetQuery(con, query_2nd)
+
+fd <- "1996-07-04"
+td <- "1996-07-11"
+query_3rd = paste0('select c.companyname as fullname, sum(od.quantity * od.unitprice) as salg
+from orders o, customers c, order_details od
+where o.customerid = c.customerid
+and o.orderid=od.orderid
+and o.orderdate between "',fd,'" and "',td,'"
+group by c.companyname
+order by salg desc;')
+
+df2 <- dbGetQuery(con, query_3rd)
+
+## Næste skridt 
+week <- function(fd,td){
+  query_3rd = paste0('select c.companyname as fullname, sum(od.quantity * od.unitprice) as salg
+from orders o, customers c, order_details od
+where o.customerid = c.customerid
+and o.orderid=od.orderid
+and o.orderdate between "',fd,'" and "',td,'"
+group by c.companyname
+order by salg desc;')
+  
+  df2 <- dbGetQuery(con,query_3rd)
+  return(df2)
+}
+
+## Test:
+fd <- "1996-07-11"
+td <- "1996-07-18"
+weekerap <- week(fd,td)
+
+
+query_sælger <- "select e.employeeid, o.orderid, concat(e.firstname," ", e.lastname) as fullname, od.quantity, o.orderdate 
+from employees e, orders o, order_details od
+where e.employeeid = o.employeeid
+and o.orderid=od.orderid
+order by o.orderid;"
+
+res=dbGetQuery(con,queryst)
+
+wrap=getUnsoldProducts('1998-03-01','1998-03-08')
+wrap=getUnsoldProducts('1998-03-01','1998-03-08')
+
+
+getUnsoldProducts <- function(fd,td) {
+  fd='1998-04-28'
+  td='1998-05-28'
+  basequery="select p.productname,od.orderid from products p 
+  left join order_details od on od.productid=p.productid and 
+  od.orderid in ( 
+  select od.orderid from order_details od, orders o 
+  where od.orderid=o.orderid and o.orderdate between " 
+  fullquery <- paste0(basequery,"'",fd,"' and '",td,"')")
+  fullquery
+  res=dbGetQuery(con,fullquery)
+  return(res)
+}
+
+
+
+
+query_saelger <- paste0('select e.employeeid, o.orderid, concat(e.firstname," ", e.lastname) as fullname, od.quantity, o.orderdate 
+from employees e, orders o, order_details od
+where e.employeeid = o.employeeid
+and o.orderid=od.orderid
+and o.orderdate between "',fd,'" and "',td,'"
+order by o.orderid;')
+
+res = dbGetQuery(con,query_saelger)
+
+
+#### SQL WORKBENCH
+use mynewNorthWind;
+
+select p.productname,od.orderid from products p
+left join order_details od on od.productid=p.productid
+and od.orderid in(
+select od.orderid from order_details od, orders o
+where od.orderid=o.orderid and 
+o.orderdate between '1998-04-28' and '1998-05-01');
+
+select od.orderid from order_details od, orders o
+where od.orderid=o.orderid and 
+o.orderdate between '1998-04-28' and '1998-05-01';
+
+select p.productname,od.orderid from products p
+left join order_details od on od.productid=p.productid
+and od.orderid in (11054,11056);
+
+select * from customers where country in ("Denmark");
+
+select * from customers;
+
+
+#Show the three most selling employees measured in quantity
+select * from employees;
+
+#Forbind sælger og ordre
+select e.employeeid, e.firstname, o.orderdate from employees e, orders o
+where e.employeeid = o.employeeid;
+
+select e.employeeid, o.orderid, concat(e.firstname," ", e.lastname) as fullname, od.quantity, o.orderdate 
+from employees e, orders o, order_details od
+where e.employeeid = o.employeeid
+and o.orderid=od.orderid
+order by o.orderid;
+
+
+
+select concat(e.firstname," ", e.lastname) as fullname, sum(od.quantity * od.unitprice) as omsaetning
+from employees e, orders o, order_details od
+where e.employeeid = o.employeeid
+and o.orderid=od.orderid
+group by e.firstname, e.lastname
+order by 2 desc;
+
+# Find de 3 mest købende kunder
+select c.companyname as fullname, sum(od.quantity * od.unitprice) as salg
+from orders o, customers c, order_details od
+where o.customerid = c.customerid
+and o.orderid=od.orderid
+group by c.companyname
+order by salg desc;
+
+select max(orderdate) from orders;
+select min(orderdate) from orders;
+
+
+#Hvad har kunderne lagt i kassen fra d.4/7-1996 til 11/7-1996?
+select c.companyname as fullname, sum(od.quantity * od.unitprice) as salg
+from orders o, customers c, order_details od
+where o.customerid = c.customerid
+and o.orderid=od.orderid
+and o.orderdate between '1996-07-04' and '1996-07-11'
+group by c.companyname
+order by salg desc;
+
+
+
+
+
+
+
+
+
