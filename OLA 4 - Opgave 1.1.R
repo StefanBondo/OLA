@@ -32,7 +32,7 @@ detail_tag       <- "[class^='Listing_details']"
 Properties_tag   <- "[class^='Listing_properties']"
 description_tag  <- "[class^='Listing_description']"
 location_tag     <- "[class^='Listing_location']"
-Link_tag         <- "[class^='Listing_link']"      # <-- HER ER DIT ID-TAG
+Link_tag         <- "[class^='Listing_link']"      # <-- HER ER under fanger den ID-TAG
 
 # Forhandler-tags
 Seller_name_tag    <- "div[aria-label='bil sælger']"
@@ -59,7 +59,7 @@ for (i in seq_along(carlist)) {
   location    <- car %>% html_element(location_tag) %>% html_text(trim=TRUE)
   link        <- car %>% html_element(Link_tag) %>% html_attr("href")          # <-- LINK
   
-  carid       <- sub(".*/", "", link)                                          # <-- ID EKSTRAHERET
+  carid       <- sub(".*/", "", link)                                          # <-- Her får vi CAR ID ud fra URL link
   
   # hent underside for netop denne bil
   rawres_bil  <- GET(link, add_headers("User-Agent" = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
