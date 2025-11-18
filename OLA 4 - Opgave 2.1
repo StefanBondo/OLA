@@ -1,0 +1,60 @@
+-- Opret en database til projektet
+CREATE DATABASE OLA_4;
+
+USE OLA_4;
+
+-- 1) Forhandler (SELLER)
+CREATE TABLE seller (
+    seller_id      INT AUTO_INCREMENT PRIMARY KEY,
+    seller_cvr     VARCHAR(20) UNIQUE,
+    name           VARCHAR(255) NOT NULL,
+    address        VARCHAR(255),
+    location       VARCHAR(255)
+);
+
+-- 2) Bil / annonce (CAR_LISTING)
+CREATE TABLE car_listing (
+    car_id         INT PRIMARY KEY,   
+    makemodel_raw  VARCHAR(255),
+    make           VARCHAR(100),        
+    model          VARCHAR(100),
+    variant        VARCHAR(100),
+    link           VARCHAR(500),
+    seller_id      INT,
+    CONSTRAINT fk_car_listing_seller
+        FOREIGN KEY (seller_id) REFERENCES seller(seller_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+);
+
+-- 3) Tidsserie med observationer (CAR_OBSERVATION)
+CREATE TABLE car_observation (
+    car_id         INT,
+    observed_at    DATETIME,      
+    price_raw      VARCHAR(50),   
+    price          INT,                   
+    details_raw    TEXT,                  
+    properties_raw TEXT,                   
+    description    TEXT,                  
+    PRIMARY KEY (car_id, observed_at),
+    CONSTRAINT fk_observation_car
+        FOREIGN KEY (car_id) REFERENCES car_listing(car_id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+);
+
+-- 4) Seneste observation per bil (CAR_LATEST_OBSERVATION)
+CREATE TABLE car_latest_observation (
+    car_id      INT,
+    observed_at DATETIME,
+    PRIMARY KEY (car_id),
+    CONSTRAINT fk_latest_car
+        FOREIGN KEY (car_id) REFERENCES car_listing(car_id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+    CONSTRAINT fk_latest_observation
+        FOREIGN KEY (car_id, observed_at)
+        REFERENCES car_observation(car_id, observed_at)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+);
