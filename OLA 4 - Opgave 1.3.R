@@ -51,3 +51,10 @@ simdf <- simdf[!simdf$carid %in% remove_ids, ]
 
 
 
+### ---------------------------------------------------------
+### 4) Brug anti_join til at se hvad der har ændret sig
+### ---------------------------------------------------------
+
+
+diffgamle <- anti_join(colldf, simdf, by = "carid")
+diffpris <- anti_join(simdf, colldf, by = "price")
