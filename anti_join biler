@@ -1,0 +1,3 @@
+diffnye <- anti_join(simdf, colldf, by = "carid")
+diffgamle <- anti_join(colldf, simdf, by = "carid")
+diffpris <- anti_join(simdf, colldf, by = "price")
