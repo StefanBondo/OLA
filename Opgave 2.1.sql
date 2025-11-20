@@ -3,6 +3,13 @@ CREATE DATABASE OLA_4;
 
 USE OLA_4;
 
+
+ALTER TABLE car_observation
+ADD sold BOOLEAN NOT NULL DEFAULT 0;
+
+ALTER TABLE car
+ADD price       VARCHAR(22) NOT NULL;
+
 -- 1) Forhandler (invariant entitet)
 CREATE TABLE seller (
     seller_cvr     VARCHAR(8)  PRIMARY KEY,    
@@ -30,7 +37,7 @@ CREATE TABLE car_observation (
     `Sys.time..` DATETIME(6) NOT NULL, 
     price       VARCHAR(22) NOT NULL,
     details     VARCHAR(47),
-    properties  VARCHAR(255),   
+    properties  VARCHAR(255),
     description TEXT,
     PRIMARY KEY (carid, `Sys.time..`),
     CONSTRAINT fk_observation_car
