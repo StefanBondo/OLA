@@ -9,26 +9,28 @@ SELECT DISTINCT
 FROM bilbasen
 WHERE seller_cvr IS NOT NULL;
 
-INSERT INTO car (carid, makemodel, link, seller_cvr)
+INSERT INTO car (carid, makemodel, link, seller_cvr, price, details)
 SELECT DISTINCT
     CAST(carid AS SIGNED) AS carid,
     makemodel,
     link,
-    seller_cvr
-    FROM bilbasen
-	WHERE seller_cvr IS NOT NULL;
-
-INSERT INTO car_observation (carid, `Sys.time..`, price, details, properties, description)
-SELECT
-    CAST(carid AS SIGNED) AS carid,
-    `Sys.time..`,
-    price,
-    details,
-    properties,
-    description
+    seller_cvr,   -- 4. kolonne
+    price,        -- 5.
+    details       -- 6.
 FROM bilbasen
 WHERE seller_cvr IS NOT NULL;
 
+INSERT INTO car_observation (carid, `Sys.time..`, price, details, properties, description, sold)
+SELECT
+    CAST(carid AS SIGNED) AS carid,
+    `Sys.time..`,          
+    price,
+    details,
+    properties,
+    description,
+    0 AS sold              
+FROM bilbasen
+WHERE seller_cvr IS NOT NULL;
 
 INSERT INTO car_latest_observation (carid, `Sys.time..`)
 SELECT o.carid, o.`Sys.time..`
