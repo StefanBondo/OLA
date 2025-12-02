@@ -1,0 +1,120 @@
+library(DBI)
+library(RMariaDB)
+library(stringr)
+library(stringi)
+library(logr)
+
+
+install.packages("logr")
+library(serial)
+
+conarduino <- serialConnection(
+  name = "mytest",
+  #port = "cu.usbserial-146101",
+  port = "cu.usbmodem146101",
+  mode = "9600,n,8,1",
+  newline = 1,
+  translation = "cr",
+  handshake = "xonxoff",
+  buffersize = 4096
+)
+
+difflimit=75
+
+open(conarduino)
+tmp=read.serialConnection(conarduino)
+tmp_list <- unlist(str_split(tmp, "\n"))
+## close(conarduino)
+options(digits.secs=2)  
+
+tmp_list
+
+dfnames=c("people","timestamp")
+totaldf=as.data.frame(matrix(nrow=0,ncol=2))
+colnames(totaldf)=dfnames
+stoptime=Sys.time()+60
+flush(conarduino)
+while (Sys.time() < stoptime) {
+  tmpdf=as.data.frame(matrix(nrow=1,ncol=2))
+  colnames(tmpdf)=dfnames
+  tmp=read.serialConnection(conarduino)
+  count=calcdist(tmp)
+  tmpdf$people=count
+  tmpdf$timestamp=Sys.time()
+  #collLine = paste(collLine,dist)
+  totaldf = rbind(totaldf,tmpdf)
+  #print(charToRaw(tmpvar))
+  flush(conarduino)
+  Sys.sleep(5)
+}
+
+totaldf
+
+
+close(conarduino)
+
+
+calcdist <- function(rawin) {
+  retval=0L
+  v=as.numeric(unlist(stri_split(rawin,regex = "\n",omit_empty=T)))
+  brutlist=sort(abs(unique(diff(v))))
+  log_print(brutlist)
+  retval=sum(brutlist > difflimit)
+  #print(retval)
+  return(round(retval/2))
+}
+
+log_close()
+barplot(nrr)
+
+
+### TEST ####
+dfnames <- c("people", "timestamp")
+totaldf <- as.data.frame(matrix(nrow = 0, ncol = 2))
+colnames(totaldf) <- dfnames
+
+# tærskelafstand i cm – skal du evt. kalibrere
+threshold <- 100        
+
+# tilstand mellem målinger
+prev_blocked <- FALSE   # var der en person foran sensoren ved sidste måling?
+people_total <- 0L      # samlet antal personer
+
+
+stoptime <- Sys.time() + 10   # kør i 60 sekunder
+
+while (Sys.time() < stoptime) {
+  tmpdf <- as.data.frame(matrix(nrow = 1, ncol = 2))
+  colnames(tmpdf) <- dfnames
+  
+  # Læs én måling fra Arduino (forvent fx "123")
+  raw_val <- read.serialConnection(conarduino)
+  dist_val <- as.numeric(raw_val)
+  
+  # Hvis vi ikke kunne parse et tal, så spring over denne iteration
+  if (is.na(dist_val)) {
+    next
+  }
+  
+  # Er der "blokering" (person foran sensor)?
+  blocked <- dist_val < threshold
+  
+  # Hvis vi går fra "ingen person" -> "person" ⇒ tæl én
+  if (!prev_blocked && blocked) {
+    people_total <- people_total + 1L
+  }
+  
+  # opdater tilstand
+  prev_blocked <- blocked
+  
+  # gem i data frame (du kan vælge: total eller "ny" pr. måling)
+  tmpdf$people    <- people_total   # samlet antal
+  tmpdf$timestamp <- Sys.time()
+  
+  totaldf <- rbind(totaldf, tmpdf)
+  
+  flush(conarduino)
+  Sys.sleep(0.2)   # hurtigere sampling er bedre end 5 sekunder
+}
+
+totaldf
