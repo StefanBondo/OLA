@@ -1,0 +1,116 @@
+library(serial)
+library(ggplot2)
+
+# Opret forbindelse til Arduino
+conarduino <- serialConnection(
+  name = "mytest",
+  port = "cu.usbmodem146101",   # læg mærke til /dev/ foran
+  mode = "9600,n,8,1",
+  newline = 1,
+  translation = "cr",
+  handshake = "none",   # jeg ville starte med 'none' til Arduino
+  buffersize = 4096
+)
+
+open(conarduino)
+
+# Kolonnenavne og tomt data frame
+dfnames <- c("people", "timestamp")
+totaldf <- data.frame(
+  people    = integer(),
+  timestamp = as.POSIXct(character())
+)
+
+# Tærskel for "person foran sensor" (skal evt. kalibreres)
+threshold    <- 100
+prev_blocked <- FALSE   # stod der en person der før?
+people_total <- 0L      # samlet antal personer
+
+# Kør i fx 60 sekunder
+stoptime <- Sys.time() + 7200
+
+sensor_height <- 300  # cm
+
+totaldf <- data.frame(
+  people    = integer(),
+  timestamp = as.POSIXct(character()),
+  distance  = numeric(),
+  height    = numeric()
+)
+
+
+while (Sys.time() < stoptime) {
+  # Læs én måling fra Arduino – fx "123"
+  raw_val  <- read.serialConnection(conarduino)
+  
+  # Ryd evt. whitespace
+  raw_val <- trimws(raw_val)
+  
+  # Konverter til tal
+  dist_val <- as.numeric(raw_val)
+  
+  # Hvis vi ikke fik et tal, så spring iterationen over
+  if (is.na(dist_val)) {
+    next
+  }
+  
+  # Er der en person foran sensoren? 
+  blocked <- dist_val > 49 && dist_val < 150
+  
+  # Overgang fra "ingen person" -> "person": tæl én
+  if (!prev_blocked && blocked) {
+    people_total <- people_total + 1L
+  }
+  
+  # Opdater tilstand
+  prev_blocked <- blocked
+  
+  now <- Sys.time()
+  
+  # Tilføj række til totaldf
+  totaldf <- rbind(
+    totaldf,
+    data.frame(
+      people    = people_total,
+      timestamp = now,
+      distance  = dist_val,
+      height    = sensor_height - dist_val
+    )
+  )
+  
+  flush(conarduino)
+  Sys.sleep(0.2)   # juster hvis du vil måle hurtigere/langsommere
+}
+
+
+close(conarduino)
+
+totaldf
+
+df_5min <- totaldf %>%
+  mutate(interval_5min = floor_date(timestamp, "5 minutes")) %>%
+  group_by(interval_5min) %>%
+  summarise(people = max(people))
+
+barplot(
+  height = df_5min$people,
+  names.arg = format(df_5min$interval_5min, "%H:%M"),
+  las = 2,               # roter labels lodret for læsbarhed
+  cex.names = 0.8,
+  main = "Personer pr. 5 minutters interval",
+  xlab = "Tid (5-min intervaller)",
+  ylab = "Kumulativt antal personer"
+)
+
+df_5min_rate <- df_5min %>%
+  mutate(new_people = c(people[1], diff(people)))
+
+barplot(
+  height = df_5min_rate$new_people,
+  names.arg = format(df_5min_rate$interval_5min, "%H:%M"),
+  las = 2,
+  cex.names = 0.8,
+  main = "Nye personer pr. 5 minut",
+  xlab = "Tid (5-min intervaller)",
+  ylab = "Antal nye personer"
+)
