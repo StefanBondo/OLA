@@ -1,0 +1,32 @@
+library(readxl)
+library(dplyr)
+
+# Indlæs data
+df <- data.frame(Forbrugergrupper_a_r)
+
+# 1) Find den største forbrugsgruppe i 2023
+størst_2023 <- df %>%
+  filter(ÅR == 2023) %>%
+  select(-ÅR) %>%
+  pivot_longer(cols = everything(),
+               names_to = "gruppe",
+               values_to = "værdi") %>%
+  arrange(desc(værdi)) %>%
+  slice(1)
+
+størst_2023
+
+# 2) Find hvilken gruppe der er steget mest fra 2020 → 2023
+ændring_2020_2023 <- df %>%
+  filter(ÅR %in% c(2020, 2023)) %>%
+  select(-ÅR) %>%
+  mutate(ÅR = df$ÅR[df$ÅR %in% c(2020, 2023)]) %>%
+  pivot_longer(cols = -ÅR,
+               names_to = "gruppe",
+               values_to = "værdi") %>%
+  pivot_wider(names_from = ÅR, values_from = værdi) %>%
+  mutate(stigning = `2023` - `2020`) %>%
+  arrange(desc(stigning)) %>%
+  slice(1)
+
+ændring_2020_2023
