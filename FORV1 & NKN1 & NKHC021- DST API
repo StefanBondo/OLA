@@ -1,4 +1,7 @@
+#-------------------------------------
 #Forbrugertillid API
+#-------------------------------------
+
 library(dkstat)
 library(tidyverse)
 
