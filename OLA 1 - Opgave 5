@@ -1,22 +1,31 @@
 ##Opg 5.1 Månedlige observationer
+library(tidyverse)
 
-klasse <- rep(c("A", "B", "C", "D"), each = 9)
 
-uge <- rep(1:9, times = 4)
+Klasse <- rep(c("A", "B", "C", "D"), each = 9)
 
-score <- rep(c(6, 12, 18, 24, 30, 36), times = 6)
+Uge <- rep(1:9, times = 4)
 
-df.mdr_obs <- data.frame(Klasse, uge, Score)
+Score <- rep(c(6, 12, 18, 24, 30, 36), times = 6)
+
+df.mdr_obs <- data.frame(Klasse, Uge, Score)
 
 
 ##Opg 5.2 Kvartalvise observationer
-total <- 0 # Sætter værdi til 0
-result <- data.frame() # Laver en tom data-frame
+total <- 0
+result <- data.frame()
 
 for (i in 1:nrow(df.mdr_obs)) {
   total <- total + df.mdr_obs[i, 3]
-  if (i %% 3 == 0) { #Kontrollerer hvis du kan trække 3 fra i, om den giver 0, hvis ja, fortsæt!
-    result <- rbind(result, data.frame(df.mdr_obs[i, 1], df.mdr_obs[i, 2], total/3))
+  if (i %% 3 == 0) {
+    result <- rbind(
+      result,
+      data.frame(
+        Klasse = df.mdr_obs[i, 1],
+        Uge    = df.mdr_obs[i, 2],
+        Score  = total / 3
+      )
+    )
     total <- 0
   }
 }
@@ -44,5 +53,7 @@ result <- result %>%
 
 ##Opg 5.3 Pivot
 result_wide <- pivot_wider(result,
-                           names_from = uge, ## kolonnenavne
+                           names_from = Uge, ## kolonnenavne
                            values_from = Score) ## Hvilke kolonne der skal blive til værdier
+
+
