@@ -1,0 +1,29 @@
+library(dplyr)
+library(zoo)
+
+
+
+
+predict_merged <- forbrug %>% 
+  inner_join(tillid, by = "Kvartal")
+
+library(zoo)
+
+forbrug <- forbrug %>%
+  rename(Kvartal = År)
+
+
+model <- lm(real_vækst_pct ~ gennemsnit, data = predict_merged)
+summary(model)
+
+tillid_Q4 <- tillid %>% 
+  filter(Kvartal == as.yearqtr("2025Q4")) %>% 
+  slice(1)
+
+
+newdata <- data.frame(
+  gennemsnit = tillid_Q4$gennemsnit
+)
+
+forecast <- predict(model, newdata = newdata)
+forecast
