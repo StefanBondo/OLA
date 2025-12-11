@@ -71,20 +71,35 @@ abline(m4, col = "red", lwd = 2)
 
 
 # 5) Pris per kvm ~ alder
-m5 <- lm(pris_per_kvm ~ alder, data = newhomes)
 
-summary(m5) #Multiple R-squared:  0.05209 = 5,2%
+# ---------------------------
+# FJERN OUTLIERS I aldet
+# ---------------------------
 
-plot(newhomes$alder, newhomes$pris_per_kvm,
-     main = "Der er Svag sammenhæng mellem pris_per_kvm ~ alder",
+Q1_a <- quantile(newhomes$alder, 0.25, na.rm = TRUE)
+Q3_a <- quantile(newhomes$alder, 0.75, na.rm = TRUE)
+IQR_a <- Q3_a - Q1_a
+
+lower_a <- Q1_a - 1.5 * IQR_a
+upper_a <- Q3_a + 1.5 * IQR_a
+
+newhomes_no_out <- newhomes[newhomes$alder >= lower_a & newhomes$alder <= upper_a, ]
+
+m_alder_no_out <- lm(pris_per_kvm ~ alder, data = newhomes_no_out)
+summary(m_alder_no_out) #Multiple R-squared:  0.06596 = 6,5%
+R2 <- summary(m_alder_no_out)$r.squared
+
+plot(newhomes_no_out$alder, newhomes_no_out$pris_per_kvm,
+     main = "Der er meget svag sammenhæng mellem pris per kvm og alder",
      xlab = "Boligens alder (år)",
      ylab = "Pris per kvm (kr.)",
-     pch = 19, col = rgb(0,0,1,0.3))
+     pch = 19,
+     col = rgb(0,0,1,0.3))
 
-abline(m5, col = "red", lwd = 2)
+abline(m_alder_no_out, col = "red", lwd = 2)
 
 # Ekstra tekst under overskriften
-mtext("Multiple R-squared:  0.05209 = 5,2%", line = 0.5)
+mtext("Multiple R-squared:  0.06596 = 6,5%", line = 0.5)
 
 
 
@@ -96,8 +111,10 @@ install.packages("corrplot")
 library(corrplot)
 
 
+library(corrplot)
+
 # Udvælg numeriske variable
-num_vars <- newhomes[, c("grund", "kvm", "pris_per_kvm", "ejerudg")]
+num_vars <- newhomes[, c("grund", "kvm", "alder", "pris_per_kvm", "ejerudg")]
 
 # Beregn korrelationer
 cor_matrix <- cor(num_vars)
@@ -107,24 +124,20 @@ upper <- cor_matrix
 upper[lower.tri(upper, diag = TRUE)] <- NA
 max_cor <- max(abs(upper), na.rm = TRUE)
 
-# Overskrift
-title_text <- paste("Der er stærkest korrelation mellem ejerudgift og pris pr. kvm:", round(max_cor, 3))
+# Lav overskrift-tekst
+title_text <- "Der er stærkest korrelation mellem pris_per_kvm og ejerudgift:"
 
-# Plot fuld matrix (begge sider)
+# Plot fuld korrelationsmatrix
 corrplot(cor_matrix,
          method = "color",
-         type = "full",        # <-- FULD matrix
-         addCoef.col = "black",
-         tl.col = "black",
-         tl.srt = 45,
+         type = "full",               # viser begge sider af matrixen
+         addCoef.col = "black",       # tilføj tal i felterne
+         tl.col = "black",            # farve på labels
+         tl.srt = 45,                 # rotation af labels
          col = colorRampPalette(c("yellow", "orange", "red", "darkred"))(200),
-         mar = c(0,0,3,0))
+         mar = c(0, 0, 3, 0))
 
 # Tilføj titel
 title(title_text, line = 1)
-
-
-
-
 
 
