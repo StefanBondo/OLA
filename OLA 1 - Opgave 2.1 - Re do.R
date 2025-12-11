@@ -34,6 +34,9 @@ boxplot(newhomes$grund,
 
 summary(newhomes$grund)
 
+
+
+
 # ---------------------------
 # FJERN OUTLIERS I EJERUDGIFT
 # ---------------------------
@@ -223,8 +226,14 @@ text(x = bp,
      cex = 0.8)
 
 #--------------------------
-# Frekvenser af energimærker
+# Frekvenser af værelser
+
+# Fjern boliger med uønskede antal værelser
+newhomes <- subset(newhomes, !(vaer %in% c(1, 8, 9, 10, 15)))
+table(newhomes$vaer)
+
 freq <- table(newhomes$vaer)
+freq
 
 # Barplot
 bp <- barplot(freq,
@@ -232,7 +241,7 @@ bp <- barplot(freq,
               ylab = "Antal boliger",
               xlab = "Antal værelser",
               col = "lightgreen",
-              las = 2)
+              las = 1)
 
 # Skriv antal over hver søjle
 text(x = bp,
