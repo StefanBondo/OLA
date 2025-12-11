@@ -103,6 +103,77 @@ r2_resultater_negativ <- merged_negativ %>%
   inner_join(combo_labels, by = c("k", "komb_nr")) %>%
   arrange(desc(R2))
 
+
+  vores_indikator <- samlet_forbrug %>%
+  rowwise() %>%
+  mutate(gennemsnit = mean(c_across(c(5,7,11,13,14)), na.rm = TRUE))
+
+
+
+## PLOT
+
+# --- 3) Vælg automatisk skaleringsfaktor til højre akse (sd-match) ---
+sd_ind <- sd(c(tillid_2025$di_gennemsnit,
+               vores_indikator$gennemsnit), na.rm = TRUE)
+sd_rv  <- sd(vores_indikator$real_vækst_pct, na.rm = TRUE)
+scale_factor <- ifelse(is.finite(sd_ind/sd_rv), sd_ind/sd_rv, 1)
+
+ggplot() +
+  # Blå søjler: årlig realvækst (pct.)
+  geom_col(
+    data = vores_indikator,
+    aes(x = .data$Kvartal, y = .data$real_vækst_pct * scale_factor,
+        fill = "Årlig realvækst (pct.)"),
+    width = 80
+  ) +
+  # DI’s indikator (grå)
+  geom_line(
+    data = tillid_2025,
+    aes(x = .data$Kvartal, y = .data$di_gennemsnit, colour = "DI's indikator"),
+    linewidth = 0.6
+  ) +
+  # Tillid_mikro's gennemsnit som "Vores indikator" (grøn)
+  geom_line(
+    data = vores_indikator,
+    aes(x = .data$Kvartal, y = .data$gennemsnit, colour = "Vores indikator"),
+    linewidth = 0.6,
+    linetype = "solid"
+  ) +
+  # Akser
+  scale_y_continuous(
+    name = "DI's & DST forbrugertillidsindikator (nettotal)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Årlig realvækst (pct.)")
+  ) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%y") +
+  # Farver/labels i legend
+  scale_fill_manual(
+    values = c("Årlig realvækst (pct.)" = "skyblue"),
+    name = NULL
+  ) +
+  scale_color_manual(
+    values = c(
+      "DI's indikator"  = "grey30",
+      "Vores indikator" = "green"   # flot grøn
+    ),
+    name = NULL
+  ) +
+  labs(
+    x = NULL,
+    title = "Vores indikator forklare forbrugertilliden bedre end DI",
+    caption = "Kilde: Danmarks Statistik"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0)
+  )
+
+str(vores_indikator$Kvartal)
+str(tillid_2025$Kvartal)
+vores_indikator$Kvartal <- as.Date(tillid_2025$Kvartal)
+tillid_2025$Kvartal <- as.Date(tillid_2025$Kvartal)
+
 vinder <- r2_resultater_negativ %>% slice(5)
 vinder$k; vinder$komb_nr; vinder$label
 # alle enkelt-navne:
