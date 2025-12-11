@@ -1,0 +1,27 @@
+install.packages("pls")
+library(pls)
+
+pcr.fit <- pcr(forbrug$real_vækst_pct ~ 
+                 `Familiens økonomiske situation i dag, sammenlignet med for et år siden`+
+                 `Familiens økonomiske  situation om et år, sammenlignet med i dag`+
+                 `Danmarks økonomiske situation i dag, sammenlignet med for et år siden`+
+                 `Danmarks økonomiske situation om et år, sammenlignet med i dag`+
+                 `Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`+
+                 `Priser i dag, sammenlignet med for et år siden`+
+                 `Priser om et år, sammenlignet med i dag`+
+                 `Arbejdsløsheden om et år, sammenlignet med i dag`+
+                 `Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.`+
+                 `Anser det som fornuftigt at spare op i den nuværende økonomiske situation`+
+                 `Regner med at kunne spare op i de kommende 12 måneder`+
+                 `Familiens økonomiske situation lige nu: kan spare/penge slår til/ bruger mere end man tjener`,,
+               data = tillid_2025, scale = TRUE,
+               validation = "CV")
+
+
+summary(pcr.fit)
+
+loadings.pcr.fit <- pcr.fit$loadings
+w.indicators.1 <- loadings.pcr.fit[1:12]^2
+sum(w.indicators.1)
+
+validationplot(pcr.fit, val.type = "RMSEP", main = "Valideringsplot: RMSEP")
