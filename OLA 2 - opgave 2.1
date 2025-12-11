@@ -1,0 +1,45 @@
+cor.test(tillid_2025$dst_gennemsnit,realvækst_2025$real_vaekst_pct)
+summary(lm_2025)
+
+lm_2025 <- lm(realvækst_2025$real_vaekst_pct ~ 
+                  tillid_2025$dst_gennemsnit,
+                data = tillid_2025)
+summary(lm_2025)
+
+
+lm_di2025 <- lm(realvækst_2025$real_vaekst_pct ~ 
+                tillid_2025$di_gennemsnit,
+              data = tillid_2025)
+
+cor.test(tillid_2025$di_gennemsnit,realvækst_2025$real_vaekst_pct)
+summary(lm_di2025)
+
+ggplot(tillid_2025, aes(x = kvartal)) +
+  geom_col(aes(y = realvækst_2025$real_vaekst_pct * scale_factor,
+               fill = "Årlig realvækst (pct.)")) +
+  geom_line(aes(y = di_gennemsnit, colour = "DI's indikator"), linewidth = 0.6) +
+  geom_line(aes(y = dst_gennemsnit, colour = "DST's indikator"), linewidth = 0.6) +
+  scale_y_continuous(
+    name = "DI's & DST forbrugertillidsindikator (nettotal)",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Årlig realvækst (pct.)")
+  ) +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%y"
+  ) +
+  scale_fill_manual(values = "skyblue", name = NULL) +
+  scale_color_manual(
+    values = c("DI's indikator" = "grey30", "DST's indikator" = "red"),
+    name = NULL
+  ) +
+  labs(
+    x = NULL,
+    title = "DI's indikator, DST indikator og realvækst i privatforbrug",
+    caption = "Kilde: Danmarks Statistik"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0) # venstrestil caption
+  )
