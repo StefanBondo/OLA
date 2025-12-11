@@ -1,0 +1,146 @@
+library(readxl)
+library(tidyverse)
+library(tidyr)
+install.packages("ggthemes")
+library(ggthemes)
+library(dplyr)
+
+## Henter Meta Data med henblik på filtrering.
+alko_meta <- dst_meta(table = "FU02", lang = "da")
+
+#Kontruer liste med filtre
+
+alko_meta_filters <- list(
+  KONSUMGRP = c("02.1.1.1 Spiritus og likør",
+                "02.1.1.2 Alkoholiske læskedrikke",
+                "02.1.2.1 Vin af druer",
+                "02.1.2.2 Vin af andre frugter",
+                "02.1.2.3 Hedvin",
+                "02.1.2.4 Vinbaserede drikkevarer og alkoholfri vin",
+                "02.1.3.1 Pilsnerøl, guldøl",
+                "02.1.3.2 Andre alkoholholdige øl",
+                "02.1.3.3 Øl med lavt alkoholindhold og alkoholfri øl",
+                "02.1.3.4 Øl-baserede drikkevarer"),
+  PRISENHED = "Løbende priser",
+  Tid = "*"
+)
+
+#Hente data via filtres
+alkodata <- dst_get_data(table = "FU02", query = alko_meta_filters, lang = "da")
+
+
+###Opg 4.1
+library(ggplot2)
+library(lubridate)
+
+
+#Vi skal i opgaven kun bruge fra 2000 til 2022 (Da det er det data som er til rådighed)
+#Da vi hentede alt data (1994-2022), så bruger vi lige noget dplyr, til at rette lidt i datasættet.
+alko_df_1999_2022 <- alkodata %>%
+  filter(TID >= "1999-01-01", TID <= "2022-01-01")
+
+alko_df_1999_2022 <- alko_df_1999_2022 |> 
+  rename(
+    Forbrugsgruppe = KONSUMGRP,
+    År             = TID,
+    Forbrug        = value
+  )
+
+
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(lubridate)
+library(corrplot)
+
+# 1. Lav hovedgrupper 
+
+
+
+df_grupperet <- alko_df_1999_2022 %>%
+  mutate(
+    År = year(År),
+    Hovedgruppe = case_when(
+      str_detect(Forbrugsgruppe,
+                 regex("alkoholfri|lavt alkoholindhold", ignore_case = TRUE)) ~
+        "Alkoholfrie drikkevarer",
+      str_detect(Forbrugsgruppe, "Spiritus og likør") ~ "Spiritus og likør",
+      str_detect(Forbrugsgruppe, "Alkoholiske læskedrikke") ~
+        "Alkoholiske læskedrikke",
+      (str_detect(Forbrugsgruppe, "Vin af druer") |
+         str_detect(Forbrugsgruppe, "Vin af andre frugter") |
+         str_detect(Forbrugsgruppe, "Hedvin")) ~
+        "Vin (alle typer)",
+      str_detect(Forbrugsgruppe, regex("øl", ignore_case = TRUE)) &
+        !str_detect(Forbrugsgruppe,
+                    regex("alkoholfri|lavt alkoholindhold", ignore_case = TRUE)) ~
+        "Øl (alle typer)",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(Hovedgruppe)) %>%
+  group_by(År, Hovedgruppe) %>%
+  summarise(Forbrug = sum(Forbrug), .groups = "drop")
+
+
+## 2. LAV INDEKS (2000 = 100) ----------------------------------------
+
+df_indeks <- df_grupperet %>%
+  group_by(Hovedgruppe) %>%
+  mutate(
+    basis = Forbrug[År == min(År)],   # basis = første år i serien
+    Indeks = (Forbrug / basis) * 100
+  ) %>%
+  ungroup()
+
+
+## 3. Wide format til korrelation 
+
+df_wide_indeks <- df_indeks %>%
+  select(År, Hovedgruppe, Indeks) %>%
+  pivot_wider(
+    names_from  = Hovedgruppe,
+    values_from = Indeks
+  )
+
+kor_matrix_index <- cor(
+  df_wide_indeks[, -1],  # uden år
+  use = "pairwise.complete.obs"
+)
+
+
+## 4. Plot 
+
+par(mfrow = c(1,1), mar = c(3,3,4,3))
+
+corrplot(
+  kor_matrix_index,
+  method      = "color",
+  tl.col      = "black",
+  tl.srt      = 45,
+  tl.cex      = 0.8,
+  addCoef.col = "black",
+  number.cex  = 0.8,
+  mar         = c(0, 0, 3, 0),
+  title       = "sammenhæng mellem alkoholiske drikkevarer"
+)
+
+
+
+
+
+ggplot(alko_df_1999_2022, aes(x = År, y = Forbrug, color = Forbrugsgruppe)) +
+  geom_line() +
+  labs(title = "Udvikling i alkoholiske drikkevarer (02.1) 1999–2022",
+       x = "År", y = "Forbrug (faste priser)") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+
+
+ggplot(df_indeks, aes(x = År, y = Forbrug)) +
+  geom_line(color = "steelblue") +
+  facet_wrap(~ Hovedgruppe, scales = "free_y") +
+  labs(title = "Udvikling i alkoholiske drikkevarer (02.1) 1999–2022",
+       x = "År", y = "Forbrug (faste priser)") +
+  theme_minimal()
