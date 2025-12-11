@@ -1,0 +1,23 @@
+DIQ4 <- c(di_tal_2025Q4$`Familiens økonomiske situation i dag, sammenlignet med for et år siden`+
+            di_tal_2025Q4$`Danmarks økonomiske situation i dag, sammenlignet med for et år siden`+
+            di_tal_2025Q4$`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`+
+            di_tal_2025Q4$`Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.`)/4
+
+DIQ4ksam <- sum(DIQ4)/1
+
+DI4kpfv <- 2.14799+0.22662*DIQ4ksam
+DI4kpfv
+
+
+DST4k <- c(dst_2025Q4$`Familiens økonomiske situation i dag, sammenlignet med for et år siden`+
+             dst_2025Q4$`Familiens økonomiske  situation om et år, sammenlignet med i dag`+
+             dst_2025Q4$`Danmarks økonomiske situation i dag, sammenlignet med for et år siden`+
+             dst_2025Q4$`Danmarks økonomiske situation om et år, sammenlignet med i dag`+
+             dst_2025Q4$`Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket`)/5
+
+DST4ksam <- sum(DST4k)/1
+
+
+
+DST4ksam <- 1.27539+0.22045*DST4ksam
+DST4ksam
