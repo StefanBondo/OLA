@@ -1,0 +1,91 @@
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+library(dplyr)
+library(ggplot2)
+
+# Sørg for at data er i rigtig rækkefølge
+vores_indikator <- vores_indikator %>% arrange(Kvartal)
+
+y <- vores_indikator$real_vækst_pct      # årlig realvækst
+x <- vores_indikator$gennemsnit          # jeres indikator (den bedste kombination)
+N <- length(y)
+
+
+H <- 25   # hvor mange kvartaler du vil teste over
+
+r2_forfra <- numeric(H)
+
+for (h in 0:(H-1)) {
+  idx <- (1 + h):N           # behold fra kvartal h+1 og frem
+  mod <- lm(y[idx] ~ x[idx])
+  r2_forfra[h + 1] <- summary(mod)$r.squared
+}
+
+
+r2_bagfra <- numeric(H)
+
+for (h in 0:(H-1)) {
+  idx <- 1:(N - h)           # behold til og med kvartal N-h
+  mod <- lm(y[idx] ~ x[idx])
+  r2_bagfra[h + 1] <- summary(mod)$r.squared
+}
+
+stab_df <- bind_rows(
+  data.frame(trin = 0:(H-1), R2 = r2_forfra, retning = "Forfra"),
+  data.frame(trin = 0:(H-1), R2 = r2_bagfra, retning = "Bagfra")
+)
+
+ggplot(stab_df, aes(x = trin, y = R2, colour = retning)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2) +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    title    = "Stabilitet af vores forbrugertillidsindikator",
+    x        = "Antal kvartaler fjernet",
+    y        = "R² for regressionen",
+    colour   = "Testretning"
+  ) +
+  theme_minimal(base_size = 13)
+
+
+colMeans(stab_df$R2)
+
+
+mean_forfra <- mean(stab_df$R2[stab_df$retning == "Forfra"])
+mean_bagfra <- mean(stab_df$R2[stab_df$retning == "Bagfra"])
+
+mean_forfra
+mean_bagfra
+
+
+ggplot(stab_df, aes(x = trin, y = R2, colour = retning)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2) +
+  
+  # Gennemsnitslinjer
+  geom_hline(yintercept = mean_forfra, linetype = "dashed", colour = "#E69F00", linewidth = 1) +
+  geom_hline(yintercept = mean_bagfra, linetype = "dashed", colour = "#009E73", linewidth = 1) +
+  
+  # Tekstlabels for middelværdi
+  annotate("text", x = max(stab_df$trin) - 2, 
+           y = mean_forfra + 0.003,
+           label = paste0("Gns. Forfra: ", round(mean_forfra, 3)),
+           colour = "#E69F00", hjust = 1) +
+  
+  annotate("text", x = max(stab_df$trin) - 2, 
+           y = mean_bagfra - 0.003,
+           label = paste0("Gns. Bagfra: ", round(mean_bagfra, 3)),
+           colour = "#009E73", hjust = 1) +
+  
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    title = "Indikatoren er mest forklaringsstærk i nyere tid, men forbliver generelt stabil",
+    x = "Antal kvartaler fjernet",
+    y = "R² fra regressionen",
+    colour = "Testretning",
+    caption = "Kilde: Danmarks Statistik og egne beregninger"
+  ) +
+  theme_minimal(base_size = 13)
