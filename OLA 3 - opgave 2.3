@@ -1,0 +1,51 @@
+tillid_pcr <- tillid
+
+names(tillid_pcr)[3:14] <- c(
+  "Familiens økonomiske situation i dag, sammenlignet med for et år siden",
+  "Familiens økonomiske  situation om et år, sammenlignet med i dag",
+  "Danmarks økonomiske situation i dag, sammenlignet med for et år siden",
+  "Danmarks økonomiske situation om et år, sammenlignet med i dag",
+  "Anskaffelse af større forbrugsgoder, fordelagtigt for øjeblikket",
+  "Priser i dag, sammenlignet med for et år siden",
+  "Priser om et år, sammenlignet med i dag",
+  "Arbejdsløsheden om et år, sammenlignet med i dag",
+  "Anskaffelse af større forbrugsgoder, inden for de næste 12 mdr.",
+  "Anser det som fornuftigt at spare op i den nuværende økonomiske situation",
+  "Regner med at kunne spare op i de kommende 12 måneder",
+  "Familiens økonomiske situation lige nu: kan spare/penge slår til/ bruger mere end man tjener"
+)
+
+tillid_pcr$Kvartal <- as.character(tillid$Kvartal)
+str(tillid$Kvartal)
+str(forbrug$Kvartal)
+
+
+
+library(dplyr)
+
+## 1) Find de X-variabler, der er brugt i pcr.fit (de 12 spørgsmål) ----
+Xvars <- colnames(pcr.fit$model)[-1]   # smider Y, beholder kun X
+
+## 2) Tag de samme variabler ud af tillid_pcr og gør dem numeriske ----
+X_train <- tillid_pcr %>%
+  select(all_of(Xvars)) %>%
+  mutate(across(everything(), ~ as.numeric(.)))
+
+## 3) Beregn gennemsnittet af hver af de 12 spørgsmål (gennemsnit af gennemsnittet-idé) ----
+X_means <- colMeans(X_train, na.rm = TRUE)
+
+## 4) Lav et syntetisk "kvartal", hvor hver variabel = sit historiske gennemsnit ----
+newdata_pcr_mean <- as.data.frame(t(X_means))
+colnames(newdata_pcr_mean) <- Xvars   # sørg for at kolonnenavne matcher pcr.fit
+
+## 5) Forudsig realvækst med pcr.fit, ncomp = 4 ----
+pred_q4_2025_pcr <- as.numeric(
+  predict(pcr.fit,
+          newdata = newdata_pcr_mean,
+          ncomp   = 4)
+)
+
+cat(
+  "Forudsagt årlig realvækst i husholdningernes forbrug",
+  round(pred_q4_2025_pcr, 2), "%\n"
+)
