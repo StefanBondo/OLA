@@ -1,0 +1,37 @@
+# 1. Loadings for 1. komponent
+load_comp1 <- as.numeric(pcr.fit$loadings[, 1])
+
+# 2. Spørgsmålsnavne (de samme som i din formel)
+spm_names <- rownames(pcr.fit$loadings)
+
+# 3. Lav tabel med procent-bidrag til Comp1
+load_df <- tibble(
+  spørgsmål = spm_names,
+  Comp1     = 100 * load_comp1^2   # procent
+)
+
+# 4. Rund pænt af
+load_df <- load_df %>%
+  mutate(Comp1 = round(Comp1, 1))
+
+load_df
+
+top3 <- load_df %>%
+  arrange(desc(abs(Comp1))) %>%
+  slice_head(n = 3)
+
+top3
+
+
+ggplot(load_df, aes(x = reorder(spørgsmål, abs(Comp1)),
+                    y = abs(Comp1),
+                    fill = spørgsmål)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 3 vigtigste spørgsmål i 1. hovedkomponent",
+    x = "Spørgsmål (forbrugerforventningsundersøgelsen)",
+    y = "Absolut loading på Comp1"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
