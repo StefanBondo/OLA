@@ -1,0 +1,14 @@
+micro_cols <- c(6,7,10,14,16,17) 
+# Antag komb_df er din tabel med R2 og col_idx
+komb_micro <- r2_resultater_negativ %>%
+  rowwise() %>%
+  filter(all(unlist(col_idx) %in% micro_cols)) %>%
+  ungroup()
+
+best_micro <- komb_micro %>%
+  slice_max(R2, n = 10)
+
+best_micro
+
+best_micro$skema_spm <- lapply(best_micro$col_idx, function(x) x - 5)
+best_micro
