@@ -85,7 +85,7 @@ while (Sys.time() < stoptime) {
 
 close(conarduino)
 
-totaldf
+totaldf <- read_excel("1.2 - Data_Sensor.xlsx")
 
 df_5min <- totaldf %>%
   mutate(interval_5min = floor_date(timestamp, "5 minutes")) %>%
