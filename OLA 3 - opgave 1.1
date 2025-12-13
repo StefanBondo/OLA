@@ -1,3 +1,11 @@
+tillid <- FORV1[17:120,]
+forbrug <- NKN1[41:143,]
+
+tillid_negativ <- tillid |>
+  mutate(across(c(8, 9, 10, 12), ~ -.x))
+
+tillid_negativ <- tillid_negativ[1:103,]
+
 tillid_negativ <- tillid |>
   mutate(across(c(8, 9, 10, 12), ~ -.x))
 
