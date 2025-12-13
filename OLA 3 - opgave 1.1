@@ -1,3 +1,6 @@
+tillid_negativ <- tillid |>
+  mutate(across(c(8, 9, 10, 12), ~ -.x))
+
 com2 <- combn(tillid[1,3:ncol(tillid)],1)
 
 combn(tillid[1,3:ncol(tillid)],2)
