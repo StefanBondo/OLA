@@ -1,0 +1,283 @@
+library(DBI)
+library(RMariaDB)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggsoccer)
+
+con <- dbConnect(
+  MariaDB(),
+  host = "www.talmedos.com",
+  port = 3306,
+  db = "superliga2",
+  user = "dalremote",
+  password = "OttoRehagel123456789Long2026!"
+)
+
+afl <- "
+SELECT
+    p.EVENT_WYID,
+    p.MATCH_WYID,
+    p.COMPETITION_WYID,
+
+    -- kampinfo
+    m.DATE        AS match_date,
+    m.MATCHLABEL AS match_label,
+    
+    -- tidspunkt info
+    c.MATCHPERIOD,
+    c.MINUTE,
+    c.SECOND,
+
+    -- hold
+    c.TEAM_WYID,
+    t.TEAMNAME AS team_name,
+
+    -- passer
+    c.PLAYER_WYID          AS passer_wyid,
+    pp.player_name         AS passer_name,
+
+    -- recipient
+    p.RECIPIENT_WYID       AS recipient_wyid,
+    pr.player_name         AS recipient_name,
+
+    -- pass info
+    p.PRIMARYTYPE,
+    p.ACCURATE,
+    p.ANGLE,
+    p.HEIGHT,
+    p.LENGTH,
+    p.ENDLOCATIONX,
+    p.ENDLOCATIONY,
+
+    -- secondary types
+    st.PRIMARYTYPE         AS secondary_primarytype,
+    st.SECONDARYTYPE1,
+    st.SECONDARYTYPE2,
+    st.SECONDARYTYPE3,
+    st.SECONDARYTYPE4,
+    st.SECONDARYTYPE5,
+    st.SECONDARYTYPE6,
+    st.SECONDARYTYPE7
+
+FROM wyscout_matchevents_passes p
+
+LEFT JOIN wyscout_matchevents_common c
+  ON p.EVENT_WYID = c.EVENT_WYID
+
+LEFT JOIN wyscout_matches m
+  ON p.MATCH_WYID = m.MATCH_WYID
+
+LEFT JOIN wyscout_teams t
+  ON c.TEAM_WYID = t.TEAM_WYID
+
+LEFT JOIN (
+    SELECT PLAYER_WYID, MAX(CONCAT(FIRSTNAME, ' ', LASTNAME)) AS player_name
+    FROM wyscout_players
+    GROUP BY PLAYER_WYID
+) pp
+  ON c.PLAYER_WYID = pp.PLAYER_WYID
+
+LEFT JOIN (
+    SELECT PLAYER_WYID, MAX(CONCAT(FIRSTNAME, ' ', LASTNAME)) AS player_name
+    FROM wyscout_players
+    GROUP BY PLAYER_WYID
+) pr
+  ON p.RECIPIENT_WYID = pr.PLAYER_WYID
+
+LEFT JOIN wyscout_matchevents_secondarytype st
+  ON p.EVENT_WYID = st.EVENT_WYID
+
+WHERE p.PRIMARYTYPE = 'pass';
+"
+
+
+passes_df <- DBI::dbGetQuery(con, afl)
+
+DBI::dbDisconnect(con)
+
+kamp1 <- passes_df %>% filter(MATCH_WYID == "5328119") #FCK vs Randers 2022-04-24 16:00:00
+
+kamp1 <- kamp1 %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+kamp1_41_min <- kamp1 %>% filter(MINUTE == "41",
+                                 SECONDARYTYPE1 == "cross")
+kamp1_41_min <- kamp1_41_min %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+## Her er der et indlæg fra Diks til Babacar - 3:00 i highlights video på FCK.TV kan man se indlægget på video
+#https://www.fck.dk/kamp/24-04-22/fc-kobenhavn-randers-fc?fbclid=IwY2xjawPv-A1leHRuA2FlbQIxMABicmlkETFnNGd2aG5BV2MyQ2RFM1Boc3J0YwZhcHBfaWQQMjIyMDM5MTc4ODIwMDg5MgABHjIIofYuJCEMZVO-Toc3Fx9ShLKNTKmrQzckRP602UvM-a8xgQWPBXLjOG4y_aem_jZI7Y05WkWmEzaZGN-sJJw
+
+
+kamp1 <- kamp1 %>% 
+  mutate(
+    pass_success = case_when(
+      SECONDARYTYPE1 == "loss" ~ "unsuccessful",
+      SECONDARYTYPE2 == "loss" ~ "unsuccessful",
+      SECONDARYTYPE3 == "loss" ~ "unsuccessful",
+      TRUE ~ "successful"
+    )
+  )
+
+
+kamp1 <- kamp1 %>% 
+  mutate(
+    isAssist = case_when(
+      grepl("assist", SECONDARYTYPE1) ~ "isAssist",
+      grepl("assist", SECONDARYTYPE2) ~ "isAssist",
+      grepl("assist", SECONDARYTYPE3) ~ "isAssist",
+      grepl("assist", SECONDARYTYPE4) ~ "isAssist",
+      grepl("assist", SECONDARYTYPE5) ~ "isAssist",
+      grepl("assist", SECONDARYTYPE6) ~ "isAssist",
+      TRUE ~ "notAssist"
+    )
+  )
+
+
+
+
+
+kamp1_plot <- kamp1 %>% 
+  filter(passer_name == "Denis Vavro") %>% 
+  drop_na(ENDLOCATIONX, ENDLOCATIONY, LENGTH, ANGLE) %>% 
+  mutate(
+    angle_rad = ANGLE * pi / 180,
+    
+    # slutpunkt skaleret til 120x80
+    xend = ENDLOCATIONX * 120 / 100,
+    yend = ENDLOCATIONY * 80 / 100,
+    
+    # delta i 0-100 skala -> skaler også delta til 120x80
+    dx = (LENGTH * cos(angle_rad)) * 120 / 100,
+    dy = (LENGTH * sin(angle_rad)) * 80 / 100,
+    
+    # startpunkt
+    x = xend - dx,
+    y = yend - dy
+  )
+
+start_points <- kamp1_plot %>%
+  mutate(point_type = "Startpunkt")
+
+end_points <- kamp1_plot %>%
+  mutate(point_type = "Slutpunkt")
+
+ggplot() +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    fill = "darkgreen",
+    colour = "white"
+  ) +
+  
+  # Afleveringer (linjer)
+  geom_segment(
+    data = kamp1_plot,
+    aes(
+      x = x, y = y,
+      xend = xend, yend = yend,
+      color = pass_success
+    ),
+    alpha = 0.6
+  ) +
+  
+  # Startpunkt
+  geom_point(
+    data = start_points,
+    aes(x = x, y = y, color = point_type),
+    size = 1.6
+  ) +
+  
+  # Slutpunkt
+  geom_point(
+    data = end_points,
+    aes(x = xend, y = yend, color = point_type),
+    size = 1.6
+  ) +
+  
+  labs(
+    title = "Oversigt over afleveringer fra assist som har medført mål",
+    color = "Forklaring"
+  ) +
+  
+  scale_color_manual(
+    values = c(
+      "successful" = "blue",
+      "unsuccessful" = "red",
+      "Startpunkt" = "yellow",
+      "Slutpunkt" = "lightgreen"
+    )
+  ) +
+  
+  coord_fixed(
+    xlim = c(0, 120),
+    ylim = c(0, 80),
+    expand = FALSE
+  ) +
+  theme_pitch()
+
+
+### CLustering
+
+set.seed(123)
+
+kamp1_cluster <- kamp1_plot %>% 
+  select(xend, yend) %>% 
+  kmeans(centers = 3)
+
+kamp1_plot$cluster <- as.factor(kamp1_cluster$cluster)
+
+
+ggplot(kamp1_plot) +
+  annotate_pitch(dimensions = pitch_statsbomb, fill = "darkgreen", colour = "white") +
+  geom_point(
+    aes(x = xend, y = yend, color = cluster, shape = pass_success),
+    size = 2,
+    alpha = 0.8
+  ) +
+  scale_shape_manual(
+    values = c(
+      "successful" = 17,   # trekant
+      "unsuccessful" = 16  # rund
+    )
+  ) +
+  coord_fixed(xlim = c(0, 120), ylim = c(0, 80), expand = FALSE) +
+  theme_pitch()
+
+
+
+###TOp 10
+
+top_10_afleveringer <- kamp1 %>% 
+  group_by(passer_name, pass_success) %>% 
+  summarise(antal = n(), .groups = "drop") %>% 
+  arrange(desc(antal))
+
+top_10_assist <- kamp1 %>% 
+  group_by(passer_name, isAssist) %>% 
+  summarise(antal = n(), .groups = "drop") %>% 
+  arrange(desc(antal))
+
+
+
+
+Hold_flest_success_afleveringer <- kamp1 %>% 
+  group_by(team_name, pass_success) %>% 
+  summarise(antal = n(), .groups = "drop") %>% 
+  arrange(desc(antal))
+
+
+
+ggplot(Hold_flest_success_afleveringer,
+       aes(x = team_name, y = antal, fill = pass_success)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Succesfulde og usuccesfulde afleveringer pr. hold",
+    x = "Hold",
+    y = "Antal afleveringer",
+    fill = "Aflevering"
+  ) +
+  theme_minimal()
+
+
