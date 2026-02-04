@@ -1,0 +1,263 @@
+library(DBI)
+library(RMariaDB)
+library(dplyr)
+library(tidyverse)
+Sys.getenv()
+install.packages("tidyverse")
+
+con <- dbConnect(MariaDB(),
+                 host="www.talmedos.com",
+                 db="superliga2",
+                 user="dalremote",
+                 password=("OttoRehagel123456789Long2026!")
+)
+
+library(shiny)
+library(dplyr)
+library(ggplot2)
+library(ggsoccer)
+library(stringr)
+
+afl <- "
+SELECT
+    p.EVENT_WYID,
+    p.MATCH_WYID,
+    p.COMPETITION_WYID,
+
+    -- kampinfo
+    m.DATE        AS match_date,
+    m.MATCHLABEL  AS match_label,
+
+    -- ✅ halvleg fra common (1H/2H)
+    c.MATCHPERIOD,
+
+    -- passer (afsender)
+    c.PLAYER_WYID          AS passer_wyid,
+    pp.player_name         AS passer_name,
+
+    -- recipient
+    p.RECIPIENT_WYID       AS recipient_wyid,
+    pr.player_name         AS recipient_name,
+
+    -- pass info
+    p.PRIMARYTYPE,
+    p.ACCURATE,
+    p.ANGLE,
+    p.HEIGHT,
+    p.LENGTH,
+    p.ENDLOCATIONX,
+    p.ENDLOCATIONY,
+
+    -- secondary types
+    st.PRIMARYTYPE         AS secondary_primarytype,
+    st.SECONDARYTYPE1,
+    st.SECONDARYTYPE2,
+    st.SECONDARYTYPE3,
+    st.SECONDARYTYPE4,
+    st.SECONDARYTYPE5,
+    st.SECONDARYTYPE6,
+    st.SECONDARYTYPE7
+
+FROM wyscout_matchevents_passes p
+
+LEFT JOIN wyscout_matchevents_common c
+  ON p.EVENT_WYID = c.EVENT_WYID
+
+LEFT JOIN wyscout_matches m
+  ON p.MATCH_WYID = m.MATCH_WYID
+
+LEFT JOIN (
+    SELECT PLAYER_WYID, MAX(CONCAT(FIRSTNAME, ' ', LASTNAME)) AS player_name
+    FROM wyscout_players
+    GROUP BY PLAYER_WYID
+) pp
+  ON c.PLAYER_WYID = pp.PLAYER_WYID
+
+LEFT JOIN (
+    SELECT PLAYER_WYID, MAX(CONCAT(FIRSTNAME, ' ', LASTNAME)) AS player_name
+    FROM wyscout_players
+    GROUP BY PLAYER_WYID
+) pr
+  ON p.RECIPIENT_WYID = pr.PLAYER_WYID
+
+LEFT JOIN wyscout_matchevents_secondarytype st
+  ON p.EVENT_WYID = st.EVENT_WYID
+
+WHERE p.PRIMARYTYPE = 'pass';
+"
+
+
+passes_df <- DBI::dbGetQuery(con, afl)
+
+
+kamp1 <- passes_df %>% dplyr::filter(MATCH_WYID == 5328119)
+
+
+ui <- fluidPage(
+  tabsetPanel(
+    tabPanel("Fodboldbanen",
+             plotOutput("soccerplot", height = "650px"))
+  )
+)
+
+server <- function(input, output, session) {
+  
+  output$soccerplot <- renderPlot({
+    
+    falk <- kamp1 %>%
+      distinct(EVENT_WYID, .keep_all = TRUE) %>%
+      filter(passer_name == "Rasmus Falk Jensen") %>%
+      filter(!is.na(ENDLOCATIONX), !is.na(ENDLOCATIONY),
+             !is.na(ANGLE), !is.na(LENGTH)) %>%
+      mutate(
+        angle_rad = ANGLE * pi/180,
+        start_x   = ENDLOCATIONX - LENGTH * cos(angle_rad),
+        start_y   = ENDLOCATIONY - LENGTH * sin(angle_rad),
+        
+        st_all = str_c(
+          SECONDARYTYPE1, SECONDARYTYPE2, SECONDARYTYPE3,
+          SECONDARYTYPE4, SECONDARYTYPE5, SECONDARYTYPE6, SECONDARYTYPE7,
+          sep = " "
+        ),
+        
+        direction = case_when(
+          str_detect(st_all, "forward_pass") ~ "Fremad",
+          str_detect(st_all, "back_pass") ~ "Tilbage",
+          str_detect(st_all, "lateral_pass") ~ "Sideværts",
+          TRUE ~ "Ukendt"
+        ),
+        
+        success_cat = case_when(
+          ACCURATE == 1 & LENGTH >= 25 ~ "high_success",
+          ACCURATE == 1 ~ "success",
+          TRUE ~ "fail"
+        )
+      )
+    
+    ggplot() +
+      annotate_pitch(
+        colour = "white",
+        dimensions = pitch_wyscout,
+        fill = "springgreen4",
+        limits = FALSE
+      ) +
+      geom_segment(
+        data = falk,
+        aes(
+          x = start_x, y = start_y,
+          xend = ENDLOCATIONX, yend = ENDLOCATIONY,
+          colour = success_cat,
+          linetype = direction
+        ),
+        linewidth = 0.7,
+        arrow = arrow(length = grid::unit(0.10, "inches"))
+      ) +
+      geom_point(
+        data = falk,
+        aes(x = start_x, y = start_y),
+        colour = "white",
+        size = 1.2
+      ) +
+      theme_pitch() +
+      theme(
+        panel.background = element_rect(fill = "springgreen4"),
+        legend.position = "right"
+      ) +
+      coord_fixed() +
+      facet_wrap(~ MATCHPERIOD) +  # ✅ viser 1H og 2H i plottet
+      scale_colour_manual(
+        values = c(high_success = "purple", success = "dodgerblue3", fail = "red3"),
+        labels = c(high_success = "Høj succes", success = "Succes", fail = "Fejl"),
+        name = "Resultat"
+      ) +
+      ggtitle("Rasmus Falk – afleveringer (1H vs 2H)")
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# brug samme datasæt som i dit plot (kamp1 = én kamp)
+falk_passes <- kamp1 %>%
+  distinct(EVENT_WYID, .keep_all = TRUE) %>%
+  filter(passer_name == "Rasmus Falk Jensen")
+
+summary_falk <- falk_passes %>%
+  summarise(
+    succes = sum(ACCURATE == 1, na.rm = TRUE),
+    fejl   = sum(ACCURATE == 0, na.rm = TRUE),
+    total  = n(),
+    succes_pct = succes / total
+  )
+
+plot_df <- tibble::tibble(
+  type = c("Succes", "Fejl"),
+  antal = c(summary_falk$succes, summary_falk$fejl)
+)
+
+ggplot(plot_df, aes(x = type, y = antal)) +
+  geom_col() +
+  geom_text(
+    aes(label = antal),
+    vjust = -0.3
+  ) +
+  labs(
+    title = paste0(
+      "Rasmus Falk – afleveringer (kamp 1): ",
+      percent(summary_falk$succes_pct, accuracy = 0.1),
+      " succes"
+    ),
+    x = "",
+    y = "Antal afleveringer"
+  ) +
+  expand_limits(y = max(plot_df$antal) * 1.15) +
+  theme_minimal()
+
+
+
+# 1) Filtrér Falk + lav direction ud fra secondarytypes
+library(dplyr)
+library(stringr)
+library(ggplot2)
+
+direction_passes <- kamp1 %>%
+  distinct(EVENT_WYID, .keep_all = TRUE) %>%
+  filter(passer_name == "Rasmus Falk Jensen") %>%
+  mutate(
+    # Byg st_all robust (giver aldrig NA)
+    st_all = paste(
+      SECONDARYTYPE1, SECONDARYTYPE2, SECONDARYTYPE3,
+      SECONDARYTYPE4, SECONDARYTYPE5, SECONDARYTYPE6, SECONDARYTYPE7
+    ),
+    st_all = str_replace_all(st_all, "NA", ""),   # ryd op
+    st_all = str_squish(st_all),
+    
+    # Retning
+    direction = case_when(
+      str_detect(st_all, "forward_pass")  ~ "Fremad",
+      str_detect(st_all, "back_pass")     ~ "Tilbage",
+      str_detect(st_all, "lateral_pass")  ~ "Sideværts",
+      TRUE                                ~ "Ukendt"
+    )
+  )
+
+direction_summary <- direction_passes %>%
+  count(direction) %>%
+  filter(direction != "Ukendt")
+
+ggplot(direction_summary, aes(x = direction, y = n, fill = direction)) +
+  geom_col() +
+  geom_text(aes(label = n), vjust = -0.3) +
+  labs(
+    title = "Rasmus Falk – afleveringsretning (kamp 1)",
+    x = "",
+    y = "Antal afleveringer"
+  ) +
+  expand_limits(y = max(direction_summary$n) * 1.15) +
+  theme_minimal() +
+  guides(fill = "none")
