@@ -182,3 +182,92 @@ primary_types <- dbGetQuery(con, glue::glue("
 "))
 
 table(primary_types$PRIMARYTYPE)
+
+test <- dbGetQuery(con, glue::glue("
+  SELECT
+    p.PRIMARYTYPE
+  FROM wyscout_matchevents_shots p
+  LEFT JOIN wyscout_matches m
+    ON p.MATCH_WYID = m.MATCH_WYID
+  WHERE p.COMPETITION_WYID = {comp_id}
+    AND m.DATE >= '{format(date_from, '%Y-%m-%d')}'
+    AND m.DATE <= CURDATE()
+"))
+table(test$PRIMARYTYPE)
+
+#spg1 = Commmon
+#spg2 = 19
+#spg3 = 276395x31
+#spg4 = 2992
+#spg5 = 1913, hjørne til passes
+
+corner_to_pass <- dbGetQuery(con, glue::glue("
+  SELECT
+    COUNT(*) AS total_corners,
+    SUM(CASE WHEN p.EVENT_WYID IS NOT NULL THEN 1 ELSE 0 END) AS corners_with_pass,
+    ROUND(
+      SUM(CASE WHEN p.EVENT_WYID IS NOT NULL THEN 1 ELSE 0 END) 
+      / COUNT(*) * 100, 
+      2
+    ) AS pct_corners_with_pass
+  FROM wyscout_matchevents_common c
+  
+  LEFT JOIN wyscout_matchevents_passes p
+    ON c.EVENT_WYID = p.EVENT_WYID
+  
+  LEFT JOIN wyscout_matches m
+    ON c.MATCH_WYID = m.MATCH_WYID
+  
+  WHERE c.COMPETITION_WYID = {comp_id}
+    AND c.PRIMARYTYPE = 'corner'
+    AND m.DATE >= '{format(date_from, '%Y-%m-%d')}'
+    AND m.DATE <= CURDATE()
+"))
+
+corner_to_pass
+
+#Shot secondarytype, hvad er et skud på mål?
+shots_with_secondary <- dbGetQuery(con, glue::glue("
+  SELECT
+    c.EVENT_WYID,
+    c.MATCH_WYID,
+    m.DATE AS match_date,
+    c.TEAM_WYID,
+    c.PLAYER_WYID,
+    c.MATCHPERIOD,
+    c.MINUTE,
+    c.SECOND,
+    c.PRIMARYTYPE,
+    s.SECONDARYTYPE1,
+    s.SECONDARYTYPE2,
+    s.SECONDARYTYPE3,
+    s.SECONDARYTYPE4,
+    s.SECONDARYTYPE5,
+    s.SECONDARYTYPE6,
+    s.SECONDARYTYPE7
+  FROM wyscout_matchevents_common c
+  
+  LEFT JOIN wyscout_matches m
+    ON c.MATCH_WYID = m.MATCH_WYID
+  
+  LEFT JOIN wyscout_matchevents_secondarytype s
+    ON c.EVENT_WYID = s.EVENT_WYID
+  
+  WHERE c.COMPETITION_WYID = {comp_id}
+    AND c.PRIMARYTYPE = 'shot'
+    AND m.DATE >= '{format(date_from, '%Y-%m-%d')}'
+    AND m.DATE <= CURDATE()
+"))
+
+table(shots_with_secondary$SECONDARYTYPE1, is.na(shots_with_secondary$SECONDARYTYPE1))
+
+corners_5585687 <- dbGetQuery(con, "
+  SELECT
+    COUNT(*) AS n_corners
+  FROM wyscout_matchevents_common
+  WHERE MATCH_WYID = 5585687
+    AND PRIMARYTYPE = 'corner'
+")
+
+corners_5585687
+
