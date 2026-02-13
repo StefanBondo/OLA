@@ -1,0 +1,131 @@
+library(DBI)
+library(RMariaDB)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggsoccer)
+library(glue)
+
+con <- dbConnect(
+  MariaDB(),
+  host = "www.talmedos.com",
+  port = 3306,
+  db = "superliga2",
+  user = "dalremote",
+  password = "OttoRehagel123456789Long2026!"
+)
+
+
+
+
+# ------------------------------------------------------------
+# PARAMETRE
+# ------------------------------------------------------------
+comp_id <- 335
+date_from <- as.Date("2024-07-01")
+date_to <- Sys.Date()
+
+# ------------------------------------------------------------
+# 1) Matches (grundtabel) ✅ (giver 301 hos dig)
+# ------------------------------------------------------------
+matches_335 <- dbGetQuery(con, glue("
+  SELECT
+    MATCH_WYID,
+    DATE       AS match_date,
+    MATCHLABEL AS match_label
+  FROM wyscout_matches
+  WHERE COMPETITION_WYID = {comp_id}
+")) %>%
+  mutate(match_date = as.Date(match_date)) %>%
+  distinct(MATCH_WYID, .keep_all = TRUE) %>%
+  filter(match_date >= date_from, match_date <= date_to)
+
+# ------------------------------------------------------------
+# 2) Shots fra common (kun shots)
+# ------------------------------------------------------------
+shots_common <- dbGetQuery(con, "
+  SELECT
+    EVENT_WYID,
+    MATCH_WYID,
+    PRIMARYTYPE,
+    MATCHPERIOD,
+    MINUTE,
+    SECOND,
+    TEAM_WYID,
+    PLAYER_WYID
+  FROM wyscout_matchevents_common
+  WHERE PRIMARYTYPE = 'shot'
+") %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+# ------------------------------------------------------------
+# 3) Teams
+# ------------------------------------------------------------
+teams <- dbGetQuery(con, "
+  SELECT
+    TEAM_WYID,
+    TEAMNAME AS team_name
+  FROM wyscout_teams
+") %>%
+  distinct(TEAM_WYID, .keep_all = TRUE)
+
+# ------------------------------------------------------------
+# 4) Players (navne)
+# ------------------------------------------------------------
+players <- dbGetQuery(con, "
+  SELECT
+    PLAYER_WYID,
+    CONCAT(FIRSTNAME, ' ', LASTNAME) AS player_name
+  FROM wyscout_players
+") %>%
+  distinct(PLAYER_WYID, .keep_all = TRUE)
+
+# ------------------------------------------------------------
+# 5) Secondary types
+# ------------------------------------------------------------
+secondary <- dbGetQuery(con, "
+  SELECT
+    EVENT_WYID,
+    PRIMARYTYPE AS secondary_primarytype,
+    SECONDARYTYPE1,
+    SECONDARYTYPE2,
+    SECONDARYTYPE3,
+    SECONDARYTYPE4,
+    SECONDARYTYPE5,
+    SECONDARYTYPE6,
+    SECONDARYTYPE7
+  FROM wyscout_matchevents_secondarytype
+") %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+# ------------------------------------------------------------
+# 6) Formations (position)
+# ------------------------------------------------------------
+formations <- dbGetQuery(con, glue("
+  SELECT
+    MATCH_WYID,
+    PLAYER_WYID,
+    PLAYERPOSITION
+  FROM wyscout_matchformations
+  WHERE COMPETITION_WYID = {comp_id}
+")) %>%
+  distinct(MATCH_WYID, PLAYER_WYID, .keep_all = TRUE)
+
+# ------------------------------------------------------------
+# 😎 Saml det hele i R
+# ✅ START FRA MATCHES så du får alle 301 kampe med
+# ------------------------------------------------------------
+shots_df_all_common <- matches_335 %>%
+  left_join(shots_common, by = "MATCH_WYID") %>%
+  left_join(teams, by = "TEAM_WYID") %>%
+  left_join(
+    players %>% select(PLAYER_WYID, player_name),
+    by = c("PLAYER_WYID" = "PLAYER_WYID")
+  ) %>%
+  left_join(
+    formations %>% select(MATCH_WYID, PLAYER_WYID, player_position = PLAYERPOSITION),
+    by = c("MATCH_WYID", "PLAYER_WYID")
+  ) %>%
+  left_join(secondary, by = "EVENT_WYID")
+
+
