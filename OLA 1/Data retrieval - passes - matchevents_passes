@@ -15,18 +15,21 @@ con <- dbConnect(
   password = "OttoRehagel123456789Long2026!"
 )
 
+library(DBI)
+library(dplyr)
+library(glue)
+
 # ------------------------------------------------------------
 # PARAMETRE
 # ------------------------------------------------------------
 comp_id <- 335
 date_from <- as.Date("2024-07-01")
-# (valgfri) date_to kan sættes hvis du vil: Sys.Date() eller en fast dato
 date_to <- Sys.Date()
 
 # ------------------------------------------------------------
-# 1) Matches (grundtabel)  ✅ herfra bygger vi alt
+# 1) Matches (grundtabel)
 # ------------------------------------------------------------
-matches_335 <- dbGetQuery(con, glue::glue("
+matches_335 <- dbGetQuery(con, glue("
   SELECT
     MATCH_WYID,
     DATE       AS match_date,
@@ -36,47 +39,87 @@ matches_335 <- dbGetQuery(con, glue::glue("
 ")) %>%
   mutate(match_date = as.Date(match_date)) %>%
   distinct(MATCH_WYID, .keep_all = TRUE) %>%
-  filter(match_date >= date_from, match_date <= date_to)
+  filter(match_date >= date_from,
+         match_date <= date_to)
 
 # ------------------------------------------------------------
-# 2) Passes (kun base)  (kun pass-events, samme som før)
+# 2) Passes fra COMMON (MASTER)  ✅ SKAL være 281.866
 # ------------------------------------------------------------
-passes_base <- dbGetQuery(con, glue::glue("
+passes_common <- dbGetQuery(con, glue("
   SELECT
-    EVENT_WYID,
-    MATCH_WYID,
-    COMPETITION_WYID,
-    PRIMARYTYPE,
-    ACCURATE,
-    ANGLE,
-    HEIGHT,
-    LENGTH,
-    RECIPIENT_WYID,
-    ENDLOCATIONX,
-    ENDLOCATIONY
-  FROM wyscout_matchevents_passes
-  WHERE COMPETITION_WYID = {comp_id}
-    AND PRIMARYTYPE = 'pass'
+    p.EVENT_WYID,
+    p.MATCH_WYID,
+    p.MATCHPERIOD,
+    p.MINUTE,
+    p.SECOND,
+    p.TEAM_WYID,
+    p.PLAYER_WYID,
+    p.LOCATIONX,
+    p.LOCATIONY
+  FROM wyscout_matchevents_common p
+  LEFT JOIN wyscout_matches m
+    ON p.MATCH_WYID = m.MATCH_WYID
+  WHERE p.COMPETITION_WYID = {comp_id}
+    AND p.PRIMARYTYPE = 'pass'
+    AND m.DATE >= '{format(date_from, '%Y-%m-%d')}'
+    AND m.DATE <= CURDATE()
+"))
+
+stopifnot(nrow(passes_common) == 281866)
+
+# ------------------------------------------------------------
+# 3) Pass numeriske felter (LENGTH, ANGLE, HEIGHT) + recipient
+#    (hentes UDEN IN-liste)
+# ------------------------------------------------------------
+passes_numbers <- dbGetQuery(con, glue("
+  SELECT
+    p.EVENT_WYID,
+    p.RECIPIENT_WYID,
+    p.LENGTH,
+    p.ANGLE,
+    p.HEIGHT,
+    p.ACCURATE,
+    p.ENDLOCATIONX,
+    p.ENDLOCATIONY
+  FROM wyscout_matchevents_passes p
+  LEFT JOIN wyscout_matches m
+    ON p.MATCH_WYID = m.MATCH_WYID
+  WHERE p.COMPETITION_WYID = {comp_id}
+    AND p.PRIMARYTYPE = 'pass'
+    AND m.DATE >= '{format(date_from, '%Y-%m-%d')}'
+    AND m.DATE <= CURDATE()
 ")) %>%
-  distinct(EVENT_WYID, .keep_all = TRUE)
+  group_by(EVENT_WYID) %>%            # sikrer 1 række pr event
+  slice(1) %>%
+  ungroup()
 
 # ------------------------------------------------------------
-# 3) Common events (tid + hold + passer)
+# 4) Secondary types (hentes UDEN IN-liste)
 # ------------------------------------------------------------
-events_common <- dbGetQuery(con, "
+secondary <- dbGetQuery(con, glue("
   SELECT
-    EVENT_WYID,
-    MATCHPERIOD,
-    MINUTE,
-    SECOND,
-    TEAM_WYID,
-    PLAYER_WYID AS passer_wyid
-  FROM wyscout_matchevents_common
-") %>%
-  distinct(EVENT_WYID, .keep_all = TRUE)
+    s.EVENT_WYID,
+    s.PRIMARYTYPE AS secondary_primarytype,
+    s.SECONDARYTYPE1,
+    s.SECONDARYTYPE2,
+    s.SECONDARYTYPE3,
+    s.SECONDARYTYPE4,
+    s.SECONDARYTYPE5,
+    s.SECONDARYTYPE6,
+    s.SECONDARYTYPE7
+  FROM wyscout_matchevents_secondarytype s
+  LEFT JOIN wyscout_matches m
+    ON s.MATCH_WYID = m.MATCH_WYID
+  WHERE s.COMPETITION_WYID = {comp_id}
+    AND m.DATE >= '{format(date_from, '%Y-%m-%d')}'
+    AND m.DATE <= CURDATE()
+")) %>%
+  group_by(EVENT_WYID) %>%
+  slice(1) %>%
+  ungroup()
 
 # ------------------------------------------------------------
-# 4) Teams
+# 5) Teams
 # ------------------------------------------------------------
 teams <- dbGetQuery(con, "
   SELECT
@@ -87,7 +130,7 @@ teams <- dbGetQuery(con, "
   distinct(TEAM_WYID, .keep_all = TRUE)
 
 # ------------------------------------------------------------
-# 5) Players (navne)
+# 6) Players
 # ------------------------------------------------------------
 players <- dbGetQuery(con, "
   SELECT
@@ -98,73 +141,69 @@ players <- dbGetQuery(con, "
   distinct(PLAYER_WYID, .keep_all = TRUE)
 
 # ------------------------------------------------------------
-# 6) Secondary types
+# 7) Saml det hele (skal stadig være 281.866) ✅
 # ------------------------------------------------------------
-secondary <- dbGetQuery(con, "
-  SELECT
-    EVENT_WYID,
-    PRIMARYTYPE AS secondary_primarytype,
-    SECONDARYTYPE1,
-    SECONDARYTYPE2,
-    SECONDARYTYPE3,
-    SECONDARYTYPE4,
-    SECONDARYTYPE5,
-    SECONDARYTYPE6,
-    SECONDARYTYPE7
-  FROM wyscout_matchevents_secondarytype
-") %>%
-  distinct(EVENT_WYID, .keep_all = TRUE)
-
-# ------------------------------------------------------------
-# 7) Formations (position)
-# ------------------------------------------------------------
-formations <- dbGetQuery(con, glue::glue("
-  SELECT
-    MATCH_WYID,
-    PLAYER_WYID,
-    PLAYERPOSITION
-  FROM wyscout_matchformations
-  WHERE COMPETITION_WYID = {comp_id}
-")) %>%
-  distinct(MATCH_WYID, PLAYER_WYID, .keep_all = TRUE)
-
-# ------------------------------------------------------------
-# 😎 Saml det hele i R
-#   ✅ START FRA MATCHES for at få alle kampe med
-# ------------------------------------------------------------
-passes_df_all <- matches_335 %>%
-  # beholder alle kampe i perioden (også de 2 uden pass-data)
-  left_join(passes_base, by = "MATCH_WYID") %>%
-  left_join(events_common, by = "EVENT_WYID") %>%
+passes_df <- matches_335 %>%
+  left_join(passes_common, by = "MATCH_WYID") %>%
+  left_join(passes_numbers, by = "EVENT_WYID") %>%
+  left_join(secondary, by = "EVENT_WYID") %>%
   left_join(teams, by = "TEAM_WYID") %>%
-  
-  # passer navn
-  left_join(
-    players %>% select(PLAYER_WYID, passer_name = player_name),
-    by = c("passer_wyid" = "PLAYER_WYID")
-  ) %>%
-  
-  # recipient navn
-  left_join(
-    players %>% select(PLAYER_WYID, recipient_name = player_name),
-    by = c("RECIPIENT_WYID" = "PLAYER_WYID")
-  ) %>%
-  
-  # passer position
-  left_join(
-    formations %>% select(MATCH_WYID, PLAYER_WYID, passer_position = PLAYERPOSITION),
-    by = c("MATCH_WYID", "passer_wyid" = "PLAYER_WYID")
-  ) %>%
-  
-  # recipient position
-  left_join(
-    formations %>% select(MATCH_WYID, PLAYER_WYID, recipient_position = PLAYERPOSITION),
-    by = c("MATCH_WYID", "RECIPIENT_WYID" = "PLAYER_WYID")
-  ) %>%
-  
-  left_join(secondary, by = "EVENT_WYID")
+  left_join(players %>% rename(passer_name = player_name),
+            by = c("PLAYER_WYID" = "PLAYER_WYID")) %>%
+  left_join(players %>% rename(recipient_name = player_name),
+            by = c("RECIPIENT_WYID" = "PLAYER_WYID"))
 
-passes_superliga <- passes_df_all %>%
-  filter(
-    match_date >= as.Date("2024-07-01"))
+stopifnot(nrow(passes_df) == 281866)
+
+passes_df <- passes_df %>%
+  mutate(PRIMARYTYPE = "pass")
+
+table(passes_df$PRIMARYTYPE)
+
+n_distinct(passes_df$MATCH_WYID)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
