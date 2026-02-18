@@ -19,6 +19,8 @@ library(DBI)
 library(dplyr)
 library(glue)
 
+DBI::dbDisconnect(con)
+
 # ------------------------------------------------------------
 # PARAMETRE
 # ------------------------------------------------------------
@@ -161,49 +163,5 @@ passes_df <- passes_df %>%
 table(passes_df$PRIMARYTYPE)
 
 n_distinct(passes_df$MATCH_WYID)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
