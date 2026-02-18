@@ -16,8 +16,6 @@ con <- dbConnect(
 )
 
 
-
-
 # ------------------------------------------------------------
 # PARAMETRE
 # ------------------------------------------------------------
@@ -52,7 +50,9 @@ shots_common <- dbGetQuery(con, "
     MINUTE,
     SECOND,
     TEAM_WYID,
-    PLAYER_WYID
+    PLAYER_WYID,
+    LOCATIONX,
+    LOCATIONY
   FROM wyscout_matchevents_common
   WHERE PRIMARYTYPE = 'shot'
 ") %>%
@@ -127,5 +127,13 @@ shots_df_all_common <- matches_335 %>%
     by = c("MATCH_WYID", "PLAYER_WYID")
   ) %>%
   left_join(secondary, by = "EVENT_WYID")
+
+table(shots_df_all_common$PRIMARYTYPE)
+
+n_distinct(shots_df_all_common$MATCH_WYID)
+
+#Hvor mange skud har været m
+834/6904*100
+#12.07995
 
 
