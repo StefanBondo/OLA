@@ -59,6 +59,25 @@ shots_common <- dbGetQuery(con, "
   distinct(EVENT_WYID, .keep_all = TRUE)
 
 # ------------------------------------------------------------
+# 2) Shots extra
+# ------------------------------------------------------------
+
+shots_extra <- dbGetQuery(con, "
+  SELECT
+    EVENT_WYID,
+    SHOTBODYPART,
+    SHOTISGOAL,
+    SHOTONTARGET,
+    SHOTGOALZONE,
+    SHOTXG,
+    SHOTPOSTSHOTXG,
+    SHOTGOALKEEPERACTION_WYID,
+    SHOTGOALKEEPER_WYID
+  FROM wyscout_matchevents_shots
+") %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+# ------------------------------------------------------------
 # 3) Teams
 # ------------------------------------------------------------
 teams <- dbGetQuery(con, "
@@ -117,6 +136,7 @@ formations <- dbGetQuery(con, glue("
 # ------------------------------------------------------------
 shots_df_all_common <- matches_335 %>%
   left_join(shots_common, by = "MATCH_WYID") %>%
+  left_join(shots_extra, by = "EVENT_WYID") %>%
   left_join(teams, by = "TEAM_WYID") %>%
   left_join(
     players %>% select(PLAYER_WYID, player_name),
