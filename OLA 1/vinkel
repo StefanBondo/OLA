@@ -1,0 +1,45 @@
+goal_width_scaled <- 7.5 / 68 * 100
+
+vinkel_længde_ny <- shots_df_all_shots %>%
+  filter(!is.na(LOCATIONX), !is.na(LOCATIONY)) %>%
+  mutate(
+    x = as.numeric(LOCATIONX),
+    y = as.numeric(LOCATIONY),
+    dx = 100 - x,
+    dy = abs(50 - y),
+    shot_length = sqrt(dx^2 + dy^2),
+    goal_angle_deg = goal_opening_angle_deg(x, y, goal_width = goal_width_scaled)
+  )
+
+
+
+goal_opening_angle_deg <- function(x, y, goal_width = 7.50,
+                                   goal_x = 100, goal_y = 50) {
+  # stolpernes y-koordinater på samme skala som y (0-100)
+  left_post_y  <- goal_y - goal_width / 2
+  right_post_y <- goal_y + goal_width / 2
+  
+  a1 <- atan2(right_post_y - y, goal_x - x)
+  a2 <- atan2(left_post_y  - y, goal_x - x)
+  
+  abs(a1 - a2) * 180 / pi
+}
+
+# ------------------------------------------------------------
+# Lav nyt dataframe med distance + gammel vinkel + ny vinkel
+# ------------------------------------------------------------
+vinkel_længde <- shots_df_all_shots %>%
+  filter(!is.na(LOCATIONX), !is.na(LOCATIONY)) %>%
+  mutate(
+    x = as.numeric(LOCATIONX),
+    y = as.numeric(LOCATIONY),
+    
+    dx = 100 - x,
+    dy = abs(50 - y),
+    
+    # afstand til målcenter (som før)
+    shot_length = sqrt(dx^2 + dy^2),
+    
+    # ny vinkel: hvor meget af målet der kan ses
+    shot_angle_deg = goal_opening_angle_deg(x, y)
+  )
