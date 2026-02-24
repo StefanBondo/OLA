@@ -1,0 +1,59 @@
+library(shiny)
+library(dplyr)
+library(ggplot2)
+
+ui <- fluidPage(
+  titlePanel("Opgave 4.2 – Afleveringer og hold"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(
+        "liga_pass",
+        "Vælg liga",
+        choices = sort(unique(passes_all$liga))
+      ),
+      uiOutput("match_dropdown")
+    ),
+    
+    mainPanel(
+      plotOutput("plot_passes", height = "450px")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  
+  output$match_dropdown <- renderUI({
+    matches <- passes_all %>%
+      filter(liga == input$liga_pass) %>%
+      distinct(MATCH_WYID, match_label) %>%
+      arrange(match_label)
+    
+    selectInput(
+      "match_id",
+      "Vælg kamp",
+      choices = setNames(matches$MATCH_WYID, matches$match_label)
+    )
+  })
+  
+  passes_match_sum <- reactive({
+    req(input$match_id)
+    
+    passes_all %>%
+      filter(liga == input$liga_pass, MATCH_WYID == input$match_id) %>%
+      mutate(pass_result = ifelse(pass_succes == "successful", "Ramt", "Fejl")) %>%
+      group_by(team_name, pass_result) %>%
+      summarise(n = n(), .groups = "drop")
+  })
+  
+  output$plot_passes <- renderPlot({
+    df <- passes_match_sum()
+    
+    ggplot(df, aes(x = team_name, y = n, fill = pass_result)) +
+      geom_col(position = "dodge") +
+      labs(x = "Hold", y = "Antal afleveringer", fill = "") +
+      theme_minimal()
+  })
+}
+
+shinyApp(ui, server)
