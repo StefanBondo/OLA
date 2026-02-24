@@ -1,0 +1,216 @@
+library(dplyr)
+
+# 1) Tilføj liga + bind sammen
+superliga <- passes_df_superliga %>% 
+  mutate(liga = "Superliga")
+
+division1 <- passes_df_1_division %>% 
+  mutate(liga = "1. division")
+
+passes_all <- bind_rows(superliga, division1)
+
+passes_all <- passes_all %>% 
+  mutate(
+    isAssist = case_when(
+      SECONDARYTYPE1 == "assist" |
+        SECONDARYTYPE2 == "assist" |
+        SECONDARYTYPE3 == "assist" |
+        SECONDARYTYPE4 == "assist" |
+        SECONDARYTYPE5 == "assist" |
+        SECONDARYTYPE6 == "assist" |
+        SECONDARYTYPE7 == "assist" ~ "isAssist",
+      TRUE ~ "notAssist"
+    )
+  )
+  )
+
+passes_2425 <- passes_all %>% 
+  filter(match_date >= as.Date("2024-07-19"),
+         match_date <= as.Date("2025-05-30")) %>%
+  mutate(
+    kampfase = if_else(MINUTE >= 80, "Efter 80", "Før 80")
+  )
+
+# 2) Hold stats (succesrate ud fra pass_succes)
+hold_stats <- passes_2425 %>%
+  filter(!is.na(team_name), !is.na(pass_succes)) %>%
+  group_by(liga, team_name) %>%
+  summarise(
+    antal_afleveringer = n(),
+    succesrate = round(mean(pass_succes == "successful") * 100, 2),
+    .groups = "drop"
+  )
+
+
+ggplot(hold_stats,
+       aes(x = succesrate,
+           y = reorder(team_name, succesrate),
+           fill = liga)) +
+  geom_col() +
+  facet_wrap(~ liga, scales = "free_y") +
+  labs(
+    x = "Succesrate (%)",
+    y = "Hold",
+    title = "OB og Nordsjælland er 
+de hold med højst succesrate for afleveringer",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+
+# 2) Hold stats (antal afelveringer)
+hold_antal_afleveringer <- passes_2425 %>%
+  filter(!is.na(team_name), !is.na(pass_succes)) %>%
+  group_by(liga, team_name) %>%
+  summarise(
+    antal_afleveringer = n(),
+    .groups = "drop"
+  ) 
+  
+
+ggplot(hold_antal_afleveringer,
+       aes(x = antal_afleveringer,
+           y = reorder(team_name, antal_afleveringer),
+           fill = liga)) +
+  geom_col() +
+  facet_wrap(~ liga, scales = "free_y") +
+  labs(
+    x = "Antal afleveringer",
+    y = "Hold",
+    title = "Hillerød og Nordsjælland er de hold med flest afleveringer",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+
+#Hvordan er afleveringerne sidst i kampene i sæsonen 2024/2025, efter minut 80, sammenlignet med resten af kampen for de to ligaer? 
+
+
+passes_2425 <- passes_all %>% 
+  filter(match_date >= as.Date("2024-07-19"),
+         match_date <= as.Date("2025-05-30")) %>%
+  mutate(
+    kampfase = if_else(MINUTE >= 80, "Efter 80", "Før 80")
+  )
+
+kampfase_stats <- passes_2425 %>%
+  filter(!is.na(kampfase)) %>% 
+  group_by(liga, kampfase) %>%
+  summarise(
+    antal_afleveringer = n(),
+    succesrate = round(mean(pass_succes == "successful") * 100, 2),
+    .groups = "drop"
+  )
+
+ggplot(kampfase_stats,
+       aes(x = kampfase,
+           y = succesrate,
+           fill = kampfase)) +
+  geom_col() +
+  facet_wrap(~ liga) +
+  labs(
+    x = "",
+    y = "Succesrate (%)",
+    title = "Succesraten for afleveringer falder efter 80 min for begge ligaer",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+
+#Hvordan er længde på afleveringerne, der er ”assist” sammenlignet med afleveringerne, der ikke er ”assist” for de to ligaer? 
+assist_længde <- passes_2425 %>%
+  filter(!is.na(LENGTH)) %>%
+  group_by(liga, isAssist) %>%
+  summarise(
+    gennemsnit_længde = round(mean(LENGTH), 2),
+    antal = n(),
+    .groups = "drop"
+  )
+
+ggplot(assist_længde,
+       aes(x = isAssist,
+           y = gennemsnit_længde,
+           fill = isAssist)) +
+  geom_col() +
+  facet_wrap(~ liga) +
+  labs(
+    x = "",
+    y = "Gennemsnitlig længde",
+    title = "Superliga er bedre til at lave lange afleveringer som medfører assist",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+#Hvor stor en del af afleveringerne, der er ”assist” kommer fra henholdsvis forsvars-, midtbane- og angrebsspillere?  
+
+passes_2425 <- passes_2425 %>% 
+  mutate(
+    position_group = case_when(
+      passer_position %in% c("cb","lcb","rcb","lb","rb",
+                             "lwb","rwb","lb5","rb5",
+                             "lcb3","rcb3") ~ "Forsvar",
+      
+      passer_position %in% c("dmf","ldmf","rdmf",
+                             "lcmf","rcmf","amf",
+                             "lamf","ramf",
+                             "lcmf3","rcmf3") ~ "Midtbane",
+      
+      passer_position %in% c("cf","lw","rw","lwf","rwf","ss") ~ "Angreb",
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+assist_position <- passes_2425 %>%
+  filter(isAssist == "isAssist",
+         !is.na(position_group)) %>%
+  group_by(liga, position_group) %>%
+  summarise(
+    antal_assists = n(),
+    .groups = "drop"
+  ) %>%
+  group_by(liga) %>%
+  mutate(
+    andel = round(antal_assists / sum(antal_assists) * 100, 2)
+  )
+
+ggplot(assist_position,
+       aes(x = position_group,
+           y = andel,
+           fill = position_group)) +
+  geom_col() +
+  facet_wrap(~ liga) +
+  labs(
+    x = "",
+    y = "Andel af assists (%)",
+    title = "1 Division → mere offensivt, angribere afslutter angrebene selv
+Superliga → mere struktureret spil, midtbanen er kreativ motor",
+    caption = "Kilde: Wyscout - egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+#Hvilke 10 spillere lavede flest assist i de to ligaer? (Sammenlign fx med spillernes xA) 
+
+top_10_spiller_afleveringer <- passes_2425 %>% 
+  filter(isAssist == "isAssist") %>% 
+  group_by(liga, passer_name) %>% 
+  summarise(assist = n(),
+            .groups = "drop") %>% 
+  group_by(liga) %>% 
+  arrange(desc(assist)) %>% 
+  slice(1:10)
+
+
+ggplot(top_10_spiller_afleveringer,
+       aes(x = assist,
+           y = reorder(passer_name, assist),
+           fill = liga)) +
+  geom_col() +
+  facet_wrap(~ liga, scales = "free_y") +
+  labs(
+    x = "Antal assists",
+    y = "Spiller",
+    title = "Tobias Arndal og Simen Bolkan Nordli er de spillere med flest assist",
+    caption = "Kilde: Wyscout - Egne Beregninger(24/25)"
+  ) +
+  guides(fill = "none")
