@@ -1,0 +1,251 @@
+#1)	Den gennemsnitlige længde på afleveringerne #-------------#-------------#-------------#-------------#-------------
+
+gennemsnits_længde_aflevering <- passes_superliga %>% 
+  filter(!is.na(LENGTH)) %>% 
+  group_by(team_name) %>% 
+  summarise(
+    gennemsnits_længde = round(mean(LENGTH, na.rm = TRUE), 2),
+  ) %>% 
+  arrange(desc(gennemsnits_længde))
+
+
+ggplot(gennemsnits_længde_aflevering, 
+       aes(x = gennemsnits_længde, 
+           y = reorder(team_name, gennemsnits_længde),
+           fill = team_name)) +
+  geom_col() +
+  labs(
+    x = "Gennemsnitlig afleveringslængde",
+    y = "Hold",
+    title = "Lyngby har i gns. de længeste afleveringer",
+    caption = "Kilde: Wyscout med egne beregninger"
+  ) +
+  guides(fill = "none")
+
+####-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+
+#2) Andel af afleveringer, der rammer en medspiller og den gennemsnitlige længde
+
+passes_superliga <- passes_superliga %>% 
+  mutate(
+    pass_succes = case_when(
+      SECONDARYTYPE1 == "loss" ~ "unsuccessful",
+      SECONDARYTYPE2 == "loss" ~ "unsuccessful",
+      SECONDARYTYPE3 == "loss" ~ "unsuccessful",
+      TRUE ~ "successful"
+    )
+  )
+
+gennemsnits_længde_og_andel_som_rammer <- passes_superliga %>% 
+  filter(!is.na(team_name)) %>% 
+  filter(pass_succes == "successful") %>% 
+  group_by(team_name) %>% 
+  summarise(succesful_afleveringer = n(),
+            gennemsnits_længde = round(mean(LENGTH, na.rm = TRUE), 2)) %>% 
+  arrange(desc(succesful_afleveringer))
+
+
+ggplot(gennemsnits_længde_og_andel_som_rammer,
+       aes(x = gennemsnits_længde,
+           y = reorder(team_name, gennemsnits_længde),
+           fill = team_name)) +
+  geom_col() +
+  labs(
+    x = "Gennemsnitlig længde (succesfulde afleveringer)",
+    y = "Hold",
+    title = "Lynby har i gns de længeste succesfulde afleveringer",
+    caption = "Kilde: Wyscout - Egne beregninger"
+  ) +
+  guides(fill = "none")
+
+####-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+#3)	Den position på banen, der modtager flest aflevering
+
+afleveringer_per_postion <- passes_superliga %>% 
+  filter(pass_succes == "successful",
+         !is.na(recipient_position)) %>% 
+  group_by(recipient_position) %>% 
+  summarise(succesful_afleveringer = n()) %>% 
+  arrange(desc(succesful_afleveringer))
+
+ggplot(afleveringer_per_postion,
+       aes(x = succesful_afleveringer,
+           y = reorder(recipient_position, succesful_afleveringer),
+           fill = recipient_position)) +
+  geom_col() +
+  labs(
+    x = "Den position på banen, der modtager flest aflevering",
+    y = "Position",
+    title = "Left Center Back er den position 
+som modtager flest afleveringer i ligaen",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+###-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+
+#4) Er lange afleveringer mere risikable end korte?
+  
+passes_superliga <- passes_superliga %>% 
+  mutate(
+    lang_eller_kort = case_when(
+      LENGTH < 20 ~ "kort",
+      LENGTH >= 20 & LENGTH <= 30 ~ "Mellem",
+      LENGTH > 30 ~ "Lang",
+      TRUE ~ NA_character_
+    )
+  )
+
+lang_eller_kort_succes <- passes_superliga %>% 
+  filter(!is.na(team_name),
+         !is.na(lang_eller_kort)) %>% 
+  group_by(lang_eller_kort, team_name) %>% 
+  summarise(
+    alle_afleveringer = n(),
+    success_antal = sum(pass_succes == "successful"),
+    unsuccess_antal = sum(pass_succes == "unsuccessful"),
+    success_rate = round(mean(pass_succes == "successful") * 100, 2),
+    unsuccess_rate = round(mean(pass_succes == "unsuccessful") * 100, 2),
+    .groups = "drop"
+  )
+
+
+
+ggplot(lang_eller_kort_succes,
+       aes(x = team_name,
+           y = success_rate,
+           fill = lang_eller_kort)) +
+  geom_col(position = "dodge") +
+  labs(
+    x = "Hold",
+    y = "Succesrate (%)",
+    title = "Korte og mellem afleveringer har højere succesrate",
+    caption = "Kilde Wyscout - Egne beregninger",
+    fill = "Afleveringstype"
+  ) +
+  coord_flip()
+
+###-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+#5) Top 10 spiller med flest succesfulde afleveringer
+
+top_10_afleveringer <- passes_superliga %>% 
+  filter(pass_succes == "successful") %>% 
+  group_by(passer_name, team_name, pass_succes) %>% 
+  summarise(antal = n(), .groups = "drop") %>% 
+  group_by(passer_name) %>% 
+  ungroup() %>% 
+  arrange(desc(antal)) %>% 
+  slice(1:10)
+
+
+ggplot(top_10_afleveringer,
+       aes(x = antal,
+           y = reorder(passer_name, antal),
+           fill = passer_name)) +
+  geom_col() +
+  labs(
+    x = "Antal succesfulde afleveringer",
+    y = "Spiller",
+    title = "Wessel Dammers fra Randers er den spiller med flest succesfulde afleveringer",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) +
+  guides(fill = "none")
+
+###-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+
+#6) Hold der har haft flest afleveringer som har været assist
+
+passes_superliga <- passes_superliga %>% 
+  mutate(
+    isAssist = case_when(
+      SECONDARYTYPE1 == "assist" ~ "isAssist",
+      TRUE ~ "notAssist"
+    )
+  )
+
+Hold_afleveringer_som_været_assist <- passes_superliga %>% 
+  filter(pass_succes == "successful",
+         isAssist == "isAssist") %>% 
+  group_by(team_name) %>% 
+  summarise(antal_afleveringer_som_har_været_assist = n()) %>% 
+  arrange(desc(antal_afleveringer_som_har_været_assist))
+
+ggplot(Hold_afleveringer_som_været_assist,
+       aes(x = antal_afleveringer_som_har_været_assist,
+           y = reorder(team_name, antal_afleveringer_som_har_været_assist),
+           fill = team_name)) +
+  geom_col() +
+  labs(
+    x = "antal afleveringer som har været assist",
+    y = "Hold",
+    title = "Midtjylland er det hold 
+som har flest succesfulde afleveringer som har været assist",
+    caption = "Kilde: Wyscout - Egne beregninger"
+  ) + guides(fill = "none")
+
+###-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+
+#7) Spiller der har haft flest afleveringer som har været assist
+
+Spiller_afleveringer_som_været_assist <- passes_superliga %>% 
+  filter(pass_succes == "successful",
+         isAssist == "isAssist") %>% 
+  group_by(passer_name) %>% 
+  summarise(antal_afleveringer_som_har_været_assist = n()) %>% 
+  arrange(desc(antal_afleveringer_som_har_været_assist)) %>% 
+  slice(1:10)
+
+ggplot(Spiller_afleveringer_som_været_assist,
+       aes(x = antal_afleveringer_som_har_været_assist,
+           y = reorder(passer_name, antal_afleveringer_som_har_været_assist),
+           fill = passer_name)) +
+  geom_col() +
+  labs(
+    x = "antal afleveringer som har været assist",
+    y = "Spiller",
+    title = "Doguhan Aral Simsir fra FC Midtjylland
+er den spiller med flest succesfulde afleveringer som har været assist",
+    caption = "Kilde: Wyscout - Egne beregninger (24/25)"
+  ) + guides(fill = "none")
+
+###-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+
+#8) Falder antallet succes afleveringer gennem tiden
+
+
+passes_superliga <- passes_superliga %>% 
+  mutate(
+    interval = case_when(
+      MINUTE >= 0  & MINUTE <= 15 ~ "0–15",
+      MINUTE >= 16 & MINUTE <= 30 ~ "16–30",
+      MINUTE >= 31 & MINUTE <= 45 ~ "31–45",
+      MINUTE >= 46 & MINUTE <= 60 ~ "46–60",
+      MINUTE >= 61 & MINUTE <= 75 ~ "61–75",
+      MINUTE >= 76 & MINUTE <= 90 ~ "76–90",
+      TRUE ~ NA_character_
+    )
+  )
+
+succesfulde_afleveringer_gennem_tid <- passes_superliga %>% 
+  filter(!is.na(interval)) %>% 
+  group_by(team_name, interval) %>% 
+  summarise(alle_skud = n(), .groups = "drop",
+            success_antal = sum(pass_succes == "successful"),
+            success_rate = round(mean(pass_succes == "successful") * 100, 2)) %>% 
+  group_by(team_name) %>% 
+  ungroup()
+
+###-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------#-------------
+
+#8) Spiller med højest unsuccesfuld rate
+
+spiller_unsuccess_rate <- passes_superliga %>% 
+  group_by(passer_name, team_name, passer_position) %>% 
+  summarise(alle_skud = n(), .groups = "drop",
+            unsuccess_antal = sum(pass_succes == "unsuccessful"),
+            unsuccess_rate = round(mean(pass_succes == "unsuccessful") * 100,2)) %>% 
+  group_by(passer_name) %>% 
+  ungroup() %>% 
+  arrange(desc(unsuccess_rate)) %>% 
+  filter(alle_skud >= 100)
+
