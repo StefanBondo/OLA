@@ -1,0 +1,142 @@
+library(DBI)
+library(dplyr)
+library(glue)
+library(stringr)
+con <- dbConnect(
+  MariaDB(),
+  host = "www.talmedos.com",
+  port = 3306,
+  db = "superliga2",
+  user = "dalremote",
+  password = "OttoRehagel123456789Long2026!"
+)
+
+# Opgave 3.1 - Superliga -------------------------------------------------------
+comp_id   <- 335                 # skift til 328 for 1. division
+date_from <- as.Date("2024-07-01")
+date_to   <- Sys.Date()
+
+date_from_sql <- format(date_from, "%Y-%m-%d")
+date_to_sql   <- format(date_to, "%Y-%m-%d")
+query_passes <- glue::glue("
+  SELECT
+    c.EVENT_WYID,
+    c.MATCH_WYID,
+    c.TEAM_WYID,
+    c.PLAYER_WYID,
+    c.MATCHPERIOD,
+    c.MINUTE,
+    c.SECOND,
+    m.DATE AS match_date,
+
+    p.ACCURATE,
+    p.LENGTH,
+    p.ANGLE,
+    p.HEIGHT
+
+  FROM wyscout_matchevents_common c
+  JOIN wyscout_matches m
+    ON c.MATCH_WYID = m.MATCH_WYID
+
+  LEFT JOIN (
+    SELECT
+      EVENT_WYID,
+      MAX(ACCURATE) AS ACCURATE,
+      MAX(LENGTH)   AS LENGTH,
+      MAX(ANGLE)    AS ANGLE,
+      MAX(HEIGHT)   AS HEIGHT
+    FROM wyscout_matchevents_passes
+    GROUP BY EVENT_WYID
+  ) p
+    ON c.EVENT_WYID = p.EVENT_WYID
+
+  WHERE m.COMPETITION_WYID = {comp_id}
+    AND c.PRIMARYTYPE = 'pass'
+    AND m.DATE >= '{date_from_sql}'
+    AND m.DATE <= '{date_to_sql}'
+")
+
+passes_raw <- dbGetQuery(con, query_passes) %>%
+  mutate(
+    LENGTH   = as.numeric(LENGTH),
+    ANGLE    = as.numeric(ANGLE),
+    ACCURATE = as.numeric(ACCURATE),
+    match_date = as.Date(match_date)
+  ) %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+cat("Pass rows:", nrow(passes_raw), "\n")
+cat("Distinct events:", dplyr::n_distinct(passes_raw$EVENT_WYID), "\n")
+
+players <- dbGetQuery(con, "
+  SELECT
+    PLAYER_WYID,
+    CONCAT(FIRSTNAME, ' ', LASTNAME) AS player_name
+  FROM wyscout_players
+") %>% distinct(PLAYER_WYID, .keep_all = TRUE)
+
+teams <- dbGetQuery(con, "
+  SELECT
+    TEAM_WYID,
+    TEAMNAME AS team_name
+  FROM wyscout_teams
+") %>% distinct(TEAM_WYID, .keep_all = TRUE)
+
+passes_raw <- passes_raw %>%
+  left_join(players, by = "PLAYER_WYID") %>%
+  left_join(teams, by = "TEAM_WYID")
+
+passes_player <- passes_raw %>%
+  filter(!is.na(PLAYER_WYID)) %>%
+  group_by(PLAYER_WYID, player_name, TEAM_WYID, team_name) %>%
+  summarise(
+    n_passes = n(),
+    pass_accuracy = mean(ACCURATE, na.rm = TRUE),
+    avg_length = mean(LENGTH, na.rm = TRUE),
+    sd_length  = sd(LENGTH, na.rm = TRUE),
+    long_pass_ratio = mean(LENGTH >= 30, na.rm = TRUE),
+    avg_abs_angle = mean(abs(ANGLE), na.rm = TRUE),
+    high_pass_ratio = mean(tolower(HEIGHT) == "high", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # min. volumen så cluster ikke domineres af 10 afleveringer
+  filter(n_passes >= 200)
+
+cat("Players in clustering set:", nrow(passes_player), "\n")
+
+set.seed(123)
+
+cluster_features <- passes_player %>%
+  select(
+    pass_accuracy, avg_length, sd_length,
+    long_pass_ratio, avg_abs_angle, high_pass_ratio, n_passes
+  )
+
+X <- scale(cluster_features)
+
+k <- 4  # start her; kan justeres senere
+km <- kmeans(X, centers = k, nstart = 50)
+
+passes_player$cluster <- factor(km$cluster)
+
+# Cluster-profiler (gennemsnit)
+cluster_summary <- passes_player %>%
+  group_by(cluster) %>%
+  summarise(
+    players = n(),
+    n_passes = mean(n_passes),
+    pass_accuracy = mean(pass_accuracy, na.rm = TRUE),
+    avg_length = mean(avg_length, na.rm = TRUE),
+    long_pass_ratio = mean(long_pass_ratio, na.rm = TRUE),
+    high_pass_ratio = mean(high_pass_ratio, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(cluster_summary)
+
+passes_player %>%
+  arrange(cluster, desc(n_passes)) %>%
+  select(cluster, player_name, team_name, n_passes, pass_accuracy, avg_length, long_pass_ratio) %>%
+  head(30)
+
+#Opgave 3.1 - 1.Division -------------------------------------------------------
