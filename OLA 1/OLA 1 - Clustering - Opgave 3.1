@@ -1,0 +1,70 @@
+library(dplyr)
+
+player_data <- passes_all %>%
+  group_by(passer_name, liga) %>%
+  summarise(
+    
+    avg_length = mean(LENGTH, na.rm = TRUE),
+    avg_angle  = mean(ANGLE, na.rm = TRUE),
+    success_rate = mean(pass_succes == "successful", na.rm = TRUE)*100,
+    
+    long_pass_share = mean(
+      SECONDARYTYPE1 == "long_pass" |
+        SECONDARYTYPE2 == "long_pass" |
+        SECONDARYTYPE3 == "long_pass" |
+        SECONDARYTYPE4 == "long_pass" |
+        SECONDARYTYPE5 == "long_pass" |
+        SECONDARYTYPE6 == "long_pass" |
+        SECONDARYTYPE7 == "long_pass",
+      na.rm = TRUE
+    ),
+    
+    forward_pass_share = mean(
+      SECONDARYTYPE1 == "forward_pass" |
+        SECONDARYTYPE2 == "forward_pass" |
+        SECONDARYTYPE3 == "forward_pass" |
+        SECONDARYTYPE4 == "forward_pass",
+      na.rm = TRUE
+    ),
+    
+    cross_share = mean(
+      SECONDARYTYPE1 == "cross" |
+        SECONDARYTYPE2 == "cross" |
+        SECONDARYTYPE3 == "cross",
+      na.rm = TRUE
+    ),
+    
+    total_passes = n(),
+    .groups = "drop"
+  ) %>%
+  filter(total_passes > 100)
+
+#Clustering
+
+set.seed(123)
+
+X <- scale(player_data %>%
+             select(avg_length, avg_angle, success_rate,
+                    long_pass_share, forward_pass_share, cross_share))
+
+cluster_model <- kmeans(X, centers = 3)
+
+player_data$cluster <- cluster_model$cluster
+
+##PLot
+
+ggplot(player_data,
+       aes(x = avg_length,
+           y = success_rate,
+           color = factor(cluster))) +
+  geom_point() + 
+  theme_minimal() + labs(
+    x = "Gennemsnitlige afleveringslængde",
+    y = "Succesrate(%)",
+    title = "Det røde segment kombinerer korte afleveringer med høj succesrate, 
+mens det grønne segment adskiller sig ved markant længere afleveringer.",
+    subtitle = "Røde: Boldsikre midtbaner/CB | Blå: Offensive profiler | Grøn: Langpasningsspillere (CB/6’er/GK)",
+    caption = "Kilde: Wyscout - Egne beregninger"
+  )
+
+
