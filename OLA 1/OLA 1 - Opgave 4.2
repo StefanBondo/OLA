@@ -40,20 +40,25 @@ server <- function(input, output, session) {
     req(input$match_id)
     
     passes_all %>%
-      filter(liga == input$liga_pass, MATCH_WYID == input$match_id) %>%
+      filter(liga == input$liga_pass,
+             MATCH_WYID == input$match_id) %>%
       mutate(pass_result = ifelse(pass_succes == "successful", "Ramt", "Fejl")) %>%
       group_by(team_name, pass_result) %>%
-      summarise(n = n(), .groups = "drop")
+      summarise(n = n(), .groups = "drop") %>%
+      group_by(team_name) %>%
+      mutate(procent = round(n / sum(n) * 100, 1))
   })
   
   output$plot_passes <- renderPlot({
     df <- passes_match_sum()
     
-    ggplot(df, aes(x = team_name, y = n, fill = pass_result)) +
+    ggplot(df, aes(x = team_name, y = procent, fill = pass_result)) +
       geom_col(position = "dodge") +
-      labs(x = "Hold", y = "Antal afleveringer", fill = "") +
+      labs(x = "Hold", y = "Procent (%)", fill = "") +
       theme_minimal()
   })
 }
 
 shinyApp(ui, server)
+
+add
