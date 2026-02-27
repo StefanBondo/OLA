@@ -1,0 +1,183 @@
+
+ui <- fluidPage(
+  titlePanel("Skud og mål i kampe"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      tabsetPanel(
+        id = "league_tab",
+        tabPanel("Superliga", value = "335"),
+        tabPanel("1. Division", value = "328")
+      ),
+      selectInput("match_choice", "Vælg kamp (dato | label)", choices = NULL),
+      checkboxInput("show_goals", "Vis mål tydeligt", value = TRUE),
+      checkboxInput("show_legend", "Vis legend", value = TRUE)
+    ),
+    
+    mainPanel(
+      plotlyOutput("shotmap_match", height = 650),
+      br(),
+      h4("Klik-info (valgt skud)"),
+      verbatimTextOutput("click_info_match")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  
+  # ---------------------- LEAGUE ID ----------------------
+  selected_league_id <- reactive({
+    req(input$league_tab)
+    as.numeric(input$league_tab)
+  })
+  
+  # ---------------------- MATCH LIST ----------------------
+  match_lookup <- reactive({
+    shots_samlet %>%
+      filter(COMPETITION_WYID == selected_league_id()) %>%
+      distinct(MATCH_WYID, match_date, match_label) %>%
+      filter(!is.na(MATCH_WYID), !is.na(match_date), !is.na(match_label)) %>%
+      mutate(match_choice = paste0(as.character(match_date), " | ", match_label)) %>%
+      arrange(match_date, match_label)
+  })
+  
+  observeEvent(match_lookup(), {
+    ml <- match_lookup()
+    
+    default_choice <- ml %>%
+      filter(MATCH_WYID == 5585687) %>%
+      pull(match_choice) %>%
+      first()
+    
+    if (is.na(default_choice) || length(default_choice) == 0) {
+      default_choice <- ml$match_choice[1]
+    }
+    
+    updateSelectInput(
+      session,
+      "match_choice",
+      choices = ml$match_choice,
+      selected = default_choice
+    )
+  }, ignoreInit = FALSE)
+  
+  # ---------------------- SELECTED MATCH ID ----------------------
+  selected_match_id <- reactive({
+    req(input$match_choice)
+    match_lookup() %>%
+      filter(match_choice == input$match_choice) %>%
+      pull(MATCH_WYID) %>%
+      first()
+  })
+  
+  # ---------------------- BASE DATA ----------------------
+  df_match <- reactive({
+    req(selected_match_id())
+    
+    shots_samlet %>%
+      filter(
+        COMPETITION_WYID == selected_league_id(),
+        MATCH_WYID == selected_match_id(),
+        PRIMARYTYPE == "shot",
+        !is.na(LOCATIONX), !is.na(LOCATIONY),
+        !is.na(team_name)
+      ) %>%
+      mutate(
+        x = as.numeric(LOCATIONX),
+        y = as.numeric(LOCATIONY),
+        is_goal = SHOTISGOAL == TRUE,
+        row_id = row_number()
+      )
+  })
+  
+  # ---------------------- TOOLTIP ----------------------
+  make_text_fun <- function(d) {
+    paste0(
+      "Hold: ", d$team_name,
+      "<br>Spiller: ", d$player_name,
+      "<br>Kamp: ", d$match_label,
+      "<br>Dato: ", d$match_date,
+      "<br>Min: ", d$MINUTE, " Sek: ", d$SECOND,
+      "<br>Mål: ", ifelse(d$is_goal, "Ja", "Nej")
+    )
+  }
+  
+  # ---------------------- PITCH ----------------------
+  base_pitch <- function(title_txt) {
+    ggplot() +
+      annotate_pitch(
+        colour = "white",
+        dimensions = pitch_wyscout,
+        fill = "springgreen4",
+        limits = FALSE
+      ) +
+      theme_pitch() +
+      theme(
+        panel.background = element_rect(fill = "springgreen4"),
+        plot.title = element_text(face = "bold")
+      ) +
+      coord_flip(xlim = c(0, 101)) +
+      labs(title = title_txt, color = NULL)
+  }
+  
+  # ---------------------- CLICK INFO ----------------------
+  clicked_match <- reactive({
+    ed <- event_data("plotly_click", source = "shots_match")
+    if (is.null(ed) || is.null(ed$key)) return(NULL)
+    df_match() %>% filter(row_id == ed$key) %>% slice(1)
+  })
+  
+  output$click_info_match <- renderPrint({
+    r <- clicked_match()
+    if (is.null(r)) return(cat("Klik på et punkt i plottet for at se info her."))
+    
+    print(list(
+      Hold = r$team_name,
+      Spiller = r$player_name,
+      Position = r$player_position,
+      Kamp = r$match_label,
+      Dato = as.character(r$match_date),
+      Periode = r$MATCHPERIOD,
+      Minut = r$MINUTE,
+      Sekund = r$SECOND,
+      Mål = r$is_goal,
+      OnTarget = as.logical(r$SHOTONTARGET),
+      xG = r$SHOTXG,
+      PostShot_xG = r$SHOTPOSTSHOTXG,
+      X = round(r$x, 1),
+      Y = round(r$y, 1),
+      BodyPart = r$SHOTBODYPART,
+      GoalZone = r$SHOTGOALZONE
+    ))
+  })
+  
+  # ---------------------- RENDER PLOT ----------------------
+  output$shotmap_match <- renderPlotly({
+    df <- df_match()
+    validate(need(nrow(df) > 0, "Ingen skud fundet for den valgte kamp."))
+    
+    teams <- unique(df$team_name)
+    team_cols <- setNames(c("blue", "darkorange"), teams[1:min(2, length(teams))])
+    
+    df_goal <- df %>% filter(is_goal)
+    df_shot <- df %>% filter(!is_goal)
+    
+    p <- base_pitch(paste0("Shot map: ", input$match_choice)) +
+      theme(legend.position = if (input$show_legend) "right" else "none") +
+      geom_point(
+        data = df_shot,
+        aes(x = x, y = y, color = team_name, key = row_id, text = make_text_fun(df_shot)),
+        shape = 16, size = 3, alpha = 0.55
+      ) +
+      { if (input$show_goals) geom_point(
+        data = df_goal,
+        aes(x = x, y = y, color = team_name, key = row_id, text = make_text_fun(df_goal)),
+        shape = 17, size = 3.8, alpha = 0.95
+      ) } +
+      scale_color_manual(values = team_cols)
+    
+    ggplotly(p, tooltip = "text", source = "shots_match")
+  })
+}
+
+shinyApp(ui, server)
