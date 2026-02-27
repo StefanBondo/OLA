@@ -18,7 +18,7 @@ con <- dbConnect(
 # ------------------------------------------------------------
 # PARAMETRE
 # ------------------------------------------------------------
-comp_id <- 335
+comp_id <- 335 #Ændre efter hvad liga der skal bruges
 date_from <- as.Date("2024-07-01")
 date_to <- Sys.Date()
 
@@ -67,7 +67,9 @@ events_common <- dbGetQuery(con, "
     MINUTE,
     SECOND,
     TEAM_WYID,
-    PLAYER_WYID
+    PLAYER_WYID,
+    LOCATIONX,
+    LOCATIONY
   FROM wyscout_matchevents_common
 ") %>%
   distinct(EVENT_WYID, .keep_all = TRUE)
@@ -125,11 +127,12 @@ formations <- dbGetQuery(con, glue("
 ")) %>%
   distinct(MATCH_WYID, PLAYER_WYID, .keep_all = TRUE)
 
+
 # ------------------------------------------------------------
 # 😎 Saml det hele i R
 # ✅ START FRA MATCHES så du beholder alle 301 kampe
 # ------------------------------------------------------------
-shots_df_all_shots <- matches_335 %>%
+shots_df_all_superliga <- matches_335 %>%
   left_join(shots, by = "MATCH_WYID") %>%
   left_join(events_common, by = "EVENT_WYID") %>%
   left_join(teams, by = "TEAM_WYID") %>%
@@ -142,3 +145,8 @@ shots_df_all_shots <- matches_335 %>%
     by = c("MATCH_WYID", "PLAYER_WYID")
   ) %>%
   left_join(secondary, by = "EVENT_WYID")
+
+table(shots_df_all_superliga$PRIMARYTYPE)
+
+n_distinct(shots_df_all_superliga$MATCH_WYID)
+
