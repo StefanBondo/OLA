@@ -1,0 +1,84 @@
+library(dplyr)
+library(ggplot2)
+
+# ------------------------------------------------------------
+# Opgave 3.2 – Clustering af 1. division (afleveringer + skud)
+# Outliers fjernes (øverste 1% i antal skud)
+# Én række pr. spiller
+# ------------------------------------------------------------
+
+# 1) Afleveringer – 1. division
+passes_1div <- passes_all %>%
+  filter(liga == "1. division") %>%
+  group_by(passer_name) %>%
+  summarise(
+    avg_pass_length = mean(LENGTH, na.rm = TRUE),
+    pass_success    = mean(pass_succes == "successful", na.rm = TRUE),
+    total_passes    = n(),
+    .groups = "drop"
+  )
+
+# 2) Skud – 1. division (mål tælles via SECONDARYTYPE)
+shots_1div <- shots_all %>%
+  filter(liga == "1. division") %>%
+  group_by(player_name) %>%
+  summarise(
+    goals = sum(
+      SECONDARYTYPE1 == "goal" |
+        SECONDARYTYPE2 == "goal" |
+        SECONDARYTYPE3 == "goal" |
+        SECONDARYTYPE4 == "goal" |
+        SECONDARYTYPE5 == "goal" |
+        SECONDARYTYPE6 == "goal" |
+        SECONDARYTYPE7 == "goal",
+      na.rm = TRUE
+    ),
+    total_shots = n(),
+    .groups = "drop"
+  )
+
+# 3) Join afleveringer + skud
+player_data <- passes_1div %>%
+  left_join(shots_1div, by = c("passer_name" = "player_name")) %>%
+  mutate(
+    goals       = ifelse(is.na(goals), 0, goals),
+    total_shots = ifelse(is.na(total_shots), 0, total_shots)
+  ) %>%
+  filter(total_passes > 5) %>%
+  filter(!is.na(avg_pass_length), !is.na(pass_success)) %>% 
+  filter(total_shots < 100)
+
+# 4) Fjern outliers (øverste 1% i antal skud)
+cut_shots <- quantile(player_data$total_shots, 0.99, na.rm = TRUE)
+
+player_data_clean <- player_data %>%
+  filter(total_shots <= cut_shots)
+
+# 5) Clustering
+set.seed(1)
+
+X <- scale(player_data_clean %>%
+             select(avg_pass_length, pass_success, total_shots, goals))
+
+cluster_model <- kmeans(X, centers = 3)
+
+player_data_clean$cluster <- cluster_model$cluster
+
+# 6) Plot
+ggplot(player_data_clean,
+       aes(x = avg_pass_length,
+           y = total_shots,
+           color = factor(cluster))) +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    x = "Gennemsnitlig afleveringslængde",
+    y = "Antal skud",
+    color = "Cluster",
+    title = "Clustering opdeler spillerne i:
+Rød: Defensive spillere - Centerbacks, Defensive midtbaner - (lange afleveringer, få skud)
+Grøn: Offensiv spillere - Angribere, Offensive midtbaner - (mange skud, korte afleveringer)
+Blå: Balanceret midtbanerprofil - Centrale midtbanespillere, Nogle backs - (Balance af de to ting)",
+    caption = "Kilde: Wyscout - Egne beregninger"
+  )
+
