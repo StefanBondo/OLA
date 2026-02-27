@@ -1,0 +1,66 @@
+library(dplyr)
+library(ggplot2)
+
+# ------------------------------------------------------------
+# Opgave 3.4 – Scouting 1.division
+# Find spillere der spiller i Superligaen og også har spillet i 1.division
+# Sammenlign deres 1.division stats med ligaens niveau
+# ------------------------------------------------------------
+
+# 1) Find spillere der findes i begge ligaer
+spillere_1div <- passes_all %>%
+  filter(liga == "1. division") %>%
+  distinct(passer_name)
+
+spillere_superliga <- passes_all %>%
+  filter(liga == "Superliga") %>%
+  distinct(passer_name)
+
+spillere_fra_1div <- inner_join(
+  spillere_1div,
+  spillere_superliga,
+  by = "passer_name"
+)
+
+# 2) Lav stats for ALLE spillere i 1.division
+stats_1div <- passes_all %>%
+  filter(liga == "1. division") %>%
+  group_by(passer_name) %>%
+  summarise(
+    avg_pass_length = mean(LENGTH, na.rm = TRUE),
+    pass_success = mean(pass_succes == "successful", na.rm = TRUE)*100,
+    total_passes = n(),
+    .groups = "drop"
+  ) %>% 
+  filter(total_passes > 400)
+
+# 3) Beregn gennemsnit for hele 1.division
+mean_1div <- stats_1div %>%
+  summarise(
+    mean_length = mean(avg_pass_length),
+    mean_success = mean(pass_success),
+    mean_passes = mean(total_passes)
+  )
+
+print(mean_1div)
+
+# 4) Udvælg de spillere der er rykket til Superliga
+compare_players <- stats_1div %>%
+  filter(passer_name %in% spillere_fra_1div$passer_name)
+
+# 5) Plot – røde spillere er dem der nu spiller Superliga
+ggplot(stats_1div,
+       aes(x = avg_pass_length, y = pass_success)) +
+  geom_point(alpha = 0.3) +
+  geom_point(data = compare_players,
+             color = "red",
+             size = 3) +
+  theme_minimal() +
+  labs(
+    x = "Gennemsnitlig afleveringslængde (1.division) - (meter)",
+    y = "Succesrate (1.division) - (%)",
+    title = "Superliga-spillere med fortid i 1.division (markeret med rød)",
+    subtitle = "Spillere vurderet på gns. afleverigslængde og successrate",
+    caption = "Kilde: Wyscout - Egne beregninger"
+  )
+
