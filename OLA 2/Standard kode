@@ -1,0 +1,314 @@
+# ----------------------------
+# 0) Load + prep
+# ----------------------------
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+
+# ----------------------------
+# 0) Load + prep
+# ----------------------------
+url <- "https://raw.githubusercontent.com/cphstud/DALF24W9/refs/heads/main/3893795.json"
+data <- fromJSON(url, flatten = TRUE)
+
+shot_cols <- readRDS("shotvector.rds")
+ff_cols   <- readRDS("freezevector.rds")
+
+shots <- data %>%
+  filter(type.name == "Shot") %>%
+  select(all_of(shot_cols)) %>%
+  mutate(
+    shx  = map_dbl(location, ~ .x[1]),
+    shy  = map_dbl(location, ~ .x[2]),
+    endx = map_dbl(shot.end_location, ~ .x[1]),
+    endy = map_dbl(shot.end_location, ~ .x[2]),
+    isHeader = shot.body_part.name %in% c("Head", "Head/Other")  # robust-ish
+  )
+
+dkShots <- shots %>% filter(str_detect(team.name, "Denmar"))
+cnShots <- shots %>% filter(str_detect(team.name, "China"))
+
+
+# ----------------------------
+# A) Helpers: offside + passability
+# ----------------------------
+
+# Offside approximation (assumes attacking towards x=120)
+is_offside_candidate <- function(att_x, ball_x, opp_x) {
+  if (is.na(att_x) || is.na(ball_x)) return(FALSE)
+  if (att_x <= 60) return(FALSE)
+  if (length(opp_x) < 2) return(FALSE)
+  offside_line <- sort(opp_x, decreasing = TRUE)[2]
+  att_x > max(ball_x, offside_line)
+}
+
+point_to_segment_dist <- function(px, py, ax, ay, bx, by) {
+  abx <- bx - ax; aby <- by - ay
+  apx <- px - ax; apy <- py - ay
+  ab2 <- abx*abx + aby*aby
+  if (ab2 == 0) return(sqrt((px-ax)^2 + (py-ay)^2))
+  t <- (apx*abx + apy*aby) / ab2
+  t <- max(0, min(1, t))
+  cx <- ax + t*abx; cy <- ay + t*aby
+  sqrt((px-cx)^2 + (py-cy)^2)
+}
+
+# pass is "blocked" if any opponent is within block_radius of the pass lane
+is_pass_blocked <- function(ball_x, ball_y, rec_x, rec_y, opp_x, opp_y, block_radius = 1.2) {
+  if (length(opp_x) == 0) return(FALSE)
+  any(mapply(
+    function(px, py) point_to_segment_dist(px, py, ball_x, ball_y, rec_x, rec_y) < block_radius,
+    opp_x, opp_y
+  ))
+}
+
+dist2 <- function(x1,y1,x2,y2) sqrt((x1-x2)^2 + (y1-y2)^2)
+
+
+# ----------------------------
+# 1) Ego scoring for ONE shot (+ header + pass possible)
+# ----------------------------
+score_ego_for_shot <- function(
+    shot_row, ff_cols,
+    block_radius = 1.2,
+    max_pass_dist = 35,
+    use_offside = TRUE
+) {
+  ff <- shot_row$shot.freeze_frame[[1]]
+  
+  if (is.null(ff) || nrow(ff) == 0) {
+    return(tibble(
+      id = shot_row$id,
+      isHeader = shot_row$isHeader,
+      shooter_opInTri = NA_integer_,
+      best_teammate_opInTri = NA_integer_,
+      best_teammate_name = NA_character_,
+      best_pass_possible = NA,
+      best_offside = NA,
+      best_blocked = NA,
+      best_reason = NA_character_,
+      isEgo = NA
+    ))
+  }
+  
+  ff <- ff %>% select(all_of(ff_cols))
+  
+  shooter_ff <- tibble(
+    teammate = TRUE,
+    player.name = shot_row$player.name,
+    location = list(c(shot_row$shx, shot_row$shy))
+  ) %>% select(all_of(intersect(names(.), ff_cols)))
+  
+  phff <- bind_rows(shooter_ff, ff) %>%
+    mutate(
+      ox = map_dbl(location, ~ .x[1]),
+      oy = map_dbl(location, ~ .x[2])
+    )
+  
+  # shooter baseline
+  shooter_op <- sum(
+    mapply(function(x,y) is_opponent_inside_triangle(x, y, shot_row$shx, shot_row$shy), phff$ox, phff$oy),
+    na.rm = TRUE
+  )
+  
+  teammate_idx <- setdiff(which(phff$teammate == TRUE), 1)
+  if (length(teammate_idx) == 0) {
+    return(tibble(
+      id = shot_row$id,
+      isHeader = shot_row$isHeader,
+      shooter_opInTri = shooter_op,
+      best_teammate_opInTri = NA_integer_,
+      best_teammate_name = NA_character_,
+      best_pass_possible = FALSE,
+      best_offside = NA,
+      best_blocked = NA,
+      best_reason = "no_teammates",
+      isEgo = FALSE
+    ))
+  }
+  
+  opp_x <- phff$ox[phff$teammate == FALSE]
+  opp_y <- phff$oy[phff$teammate == FALSE]
+  
+  # Build a table of candidate teammates with feasibility flags + their triangle score
+  cand <- purrr::map_dfr(teammate_idx, function(i) {
+    rec_x <- phff$ox[i]; rec_y <- phff$oy[i]
+    pass_dist <- dist2(shot_row$shx, shot_row$shy, rec_x, rec_y)
+    
+    offside <- if (use_offside) is_offside_candidate(rec_x, shot_row$shx, opp_x) else FALSE
+    blocked <- is_pass_blocked(shot_row$shx, shot_row$shy, rec_x, rec_y, opp_x, opp_y, block_radius)
+    
+    pass_possible <- (!offside) && (!blocked) && (pass_dist <= max_pass_dist)
+    
+    op_tri <- sum(
+      mapply(function(x,y) is_opponent_inside_triangle(x, y, rec_x, rec_y), phff$ox, phff$oy),
+      na.rm = TRUE
+    )
+    
+    tibble(
+      teammate_name = phff$player.name[i],
+      rec_x = rec_x,
+      rec_y = rec_y,
+      pass_dist = pass_dist,
+      offside = offside,
+      blocked = blocked,
+      pass_possible = pass_possible,
+      teammate_opInTri = op_tri
+    )
+  })
+  
+  # Choose "best" only among pass_possible alternatives
+  cand_ok <- cand %>% filter(pass_possible)
+  
+  if (nrow(cand_ok) == 0) {
+    # no feasible pass alternatives -> keep best fields NA but keep reason
+    return(tibble(
+      id = shot_row$id,
+      isHeader = shot_row$isHeader,
+      shooter_opInTri = shooter_op,
+      best_teammate_opInTri = NA_integer_,
+      best_teammate_name = NA_character_,
+      best_pass_possible = FALSE,
+      best_offside = NA,
+      best_blocked = NA,
+      best_reason = "no_feasible_pass",
+      isEgo = FALSE
+    ))
+  }
+  
+  best <- cand_ok %>% slice_min(teammate_opInTri, with_ties = FALSE)
+  
+  tibble(
+    id = shot_row$id,
+    isHeader = shot_row$isHeader,
+    shooter_opInTri = shooter_op,
+    best_teammate_opInTri = best$teammate_opInTri,
+    best_teammate_name = best$teammate_name,
+    best_pass_possible = TRUE,
+    best_offside = best$offside,
+    best_blocked = best$blocked,
+    best_reason = "ok",
+    isEgo = best$teammate_opInTri < shooter_op
+  )
+}
+
+
+# ----------------------------
+# 2) Ego scoring for ALL shots
+# ----------------------------
+score_ego_for_all <- function(
+    shots_df, ff_cols,
+    block_radius = 1.2,
+    max_pass_dist = 35,
+    use_offside = TRUE
+) {
+  res <- shots_df %>%
+    split(seq_len(nrow(.))) %>%
+    purrr::map_dfr(~ score_ego_for_shot(
+      .x, ff_cols,
+      block_radius = block_radius,
+      max_pass_dist = max_pass_dist,
+      use_offside = use_offside
+    ))
+  
+  shots_df %>% left_join(res, by = "id")
+}
+
+dkShots_scored <- score_ego_for_all(dkShots, ff_cols, block_radius = 1.2, max_pass_dist = 35, use_offside = TRUE)
+cnShots_scored <- score_ego_for_all(cnShots, ff_cols, block_radius = 1.2, max_pass_dist = 35, use_offside = TRUE)
+
+
+# ----------------------------
+# 3) Plot: shooter tri + best tri + pass line (if feasible)
+# ----------------------------
+plot_shot_with_freeze <- function(shots_scored, ff_cols, row = NULL, id = NULL, xzoom = c(90,121)) {
+  idx <- if (!is.null(id)) which(shots_scored$id == id)[1] else row
+  if (is.na(idx) || idx < 1 || idx > nrow(shots_scored)) stop("Could not find shot (check row/id).")
+  
+  s <- shots_scored[idx, ]
+  
+  tri_shooter <- plotSingleShotTri(c(s$shx, s$shy))
+  
+  p1 <- ggplot(s) +
+    annotate_pitch(dimensions = pitch_statsbomb, colour = "white", fill = "#3ab54a") +
+    geom_polygon(data = tri_shooter, aes(x = sx, y = sy), alpha = 0.35) +
+    geom_segment(aes(x = shx, y = shy, xend = endx, yend = endy), colour = "yellow", size = 1) +
+    geom_point(aes(x = shx, y = shy), size = 2.8) +
+    geom_text(aes(x = shx, y = shy, label = player.name), size = 2.6, vjust = 1) +
+    theme_pitch() +
+    coord_flip(xlim = xzoom) +
+    scale_y_reverse() +
+    ggtitle(
+      paste0(
+        "Shot: ", s$player.name,
+        " | header=", s$isHeader,
+        " | isEgo=", s$isEgo,
+        " | shooter_opInTri=", s$shooter_opInTri,
+        " | best=", s$best_teammate_name, " (", s$best_teammate_opInTri, ")",
+        " | pass_possible=", s$best_pass_possible
+      )
+    )
+  
+  ff <- s$shot.freeze_frame[[1]]
+  if (is.null(ff) || nrow(ff) == 0) {
+    print(p1)
+    message("No freeze-frame available for this shot.")
+    return(invisible(list(shot_plot = p1, freeze_plot = NULL)))
+  }
+  
+  ff <- ff %>% select(all_of(ff_cols))
+  
+  shooter_ff <- tibble(
+    teammate = TRUE,
+    player.name = s$player.name,
+    location = list(c(s$shx, s$shy))
+  ) %>% select(all_of(intersect(names(.), ff_cols)))
+  
+  phff <- bind_rows(shooter_ff, ff) %>%
+    mutate(
+      ox = map_dbl(location, ~ .x[1]),
+      oy = map_dbl(location, ~ .x[2])
+    )
+  
+  # best teammate position (only meaningful if pass_possible TRUE)
+  best_tri <- NULL
+  pass_seg <- NULL
+  
+  if (isTRUE(s$best_pass_possible) && !is.na(s$best_teammate_name)) {
+    br <- which(phff$player.name == s$best_teammate_name & phff$teammate == TRUE)[1]
+    if (!is.na(br)) {
+      best_tri <- plotSingleShotTri(c(phff$ox[br], phff$oy[br]))
+      pass_seg <- tibble(x = s$shx, y = s$shy, xend = phff$ox[br], yend = phff$oy[br])
+    }
+  }
+  
+  p2 <- ggplot() +
+    annotate_pitch(dimensions = pitch_statsbomb, colour = "white", fill = "#3ab54a") +
+    geom_polygon(data = tri_shooter, aes(x = sx, y = sy), alpha = 0.20) +
+    {if (!is.null(best_tri)) geom_polygon(data = best_tri, aes(x = sx, y = sy), alpha = 0.20)} +
+    {if (!is.null(pass_seg)) geom_segment(data = pass_seg, aes(x = x, y = y, xend = xend, yend = yend),
+                                          linetype = "dashed", size = 0.9)} +
+    geom_point(data = phff, aes(x = ox, y = oy, colour = teammate), size = 2.6) +
+    geom_text(data = phff, aes(x = ox, y = oy, label = player.name), size = 2.5, vjust = 1) +
+    theme_pitch() +
+    coord_flip(xlim = xzoom) +
+    scale_y_reverse() +
+    ggtitle("Freeze-frame: shooter-tri (+ best-tri if feasible)")
+  
+  print(p1)
+  print(p2)
+  invisible(list(shot_plot = p1, freeze_plot = p2))
+}
+
+
+# ----------------------------
+# 4) Examples
+# ----------------------------
+dkShots_scored %>% count(isEgo, sort = TRUE)
+plot_shot_with_freeze(dkShots_scored, ff_cols, row = 8)
+
+cnShots_scored %>% count(isEgo, sort = TRUE)
+plot_shot_with_freeze(cnShots_scored, ff_cols, row = 2)
