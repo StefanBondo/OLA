@@ -1,0 +1,101 @@
+library(jsonlite)
+library(tidyverse)
+library(dplyr)
+library(ggsoccer)
+library(ggplot2)
+library(stringr)
+library(ggrepel)
+source("util.R")
+
+# ----------------------------
+# Load data
+# ----------------------------
+allMatches <- getAllMatches()
+
+#FA Women's Super League - comp id: 37
+#Premier League - comp id: 2
+
+
+all_premier_league_kvinder <- allMatches %>% filter(competition.competition_id == "37")
+
+all_premier_league_kvinder_match_ids <-  all_premier_league_kvinder$match_id
+
+all_premier_league_mænd_events <- readRDS("malePremLeage.rds")
+all_premier_league_kvinder_events <- getAllEventsMultipleMatches(all_premier_league_kvinder_match_ids)
+
+
+# ----------------------------
+# Data modelling - Aflevering og skud
+# ----------------------------
+
+test <- all_premier_league_kvinder_events %>%
+  filter(type.name == "Pass",
+         play_pattern.name == "Regular Play",
+         pass.outcome.name == "Unknown") %>% select(play_pattern.name,contains("pass"))
+  
+
+# -------- KVINDER --------
+
+kvinder_stats <- all_premier_league_kvinder_events %>%
+  group_by(match_id) %>%
+  summarise(
+    fejl_afleveringer = sum(type.name == "Pass" & !is.na(pass.outcome.name)),
+    missede_skud = sum(type.name == "Shot" & shot.outcome.name != "Goal", na.rm = TRUE),
+    fouls = sum(type.name == "Foul Committed"),
+    boldtab = sum(type.name %in% c("Dispossessed", "Miscontrol")),
+    dueller = sum(type.name == "Duel")
+  )
+
+kvinder_mean <- kvinder_stats %>%
+  summarise(across(everything(), mean))
+
+
+# -------- MÆND --------
+mænd_stats <- all_premier_league_mænd_events %>%
+  group_by(matchId) %>%
+  summarise(
+    fejl_afleveringer = sum(type.name == "Pass" & !is.na(pass.outcome.name)),
+    missede_skud = sum(type.name == "Shot" & shot.outcome.name != "Goal", na.rm = TRUE),
+    fouls = sum(type.name == "Foul Committed"),
+    boldtab = sum(type.name %in% c("Dispossessed", "Miscontrol")),
+    dueller = sum(type.name == "Duel")
+  )
+
+mænd_mean <- mænd_stats %>%
+  summarise(across(everything(), mean))
+
+
+# -------- PLOT DATA --------
+plot_data <- data.frame(
+  køn = c("Kvinder", "Mænd"),
+  fejl_afleveringer = c(kvinder_mean$fejl_afleveringer, mænd_mean$fejl_afleveringer),
+  missede_skud = c(kvinder_mean$missede_skud, mænd_mean$missede_skud),
+  fouls = c(kvinder_mean$fouls, mænd_mean$fouls),
+  boldtab = c(kvinder_mean$boldtab, mænd_mean$boldtab),
+  dueller = c(kvinder_mean$dueller, mænd_mean$dueller)
+)
+
+plot_data_long <- plot_data %>%
+  pivot_longer(cols = -køn, names_to = "type", values_to = "værdi")
+
+# pæne labels
+plot_data_long$type <- recode(plot_data_long$type,
+                              fejl_afleveringer = "Fejl afleveringer",
+                              missede_skud = "Missede skud",
+                              fouls = "Frispark begået",
+                              boldtab = "Boldtab",
+                              dueller = "Dueller"
+)
+
+# -------- PLOT --------
+ggplot(plot_data_long, aes(x = køn, y = værdi, fill = type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(aes(label = round(værdi, 1)),
+            position = position_dodge(width = 0.9),
+            vjust = -0.3) +
+  labs(
+    title = "Sammenligning af events pr. kamp i Premier League",
+    x = "Køn",
+    y = "Gennemsnit pr. kamp",
+    fill = "Event type"
+  )
