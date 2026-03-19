@@ -1,0 +1,60 @@
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# -------- KVINDER (TOTAL) --------
+kvinder_total <- all_premier_league_kvinder_events %>%
+  summarise(
+    fejl_afleveringer = sum(type.name == "Pass" & !is.na(pass.outcome.name)),
+    missede_skud = sum(type.name == "Shot" & shot.outcome.name != "Goal", na.rm = TRUE),
+    fouls = sum(type.name == "Foul Committed"),
+    boldtab = sum(type.name %in% c("Dispossessed", "Miscontrol")),
+    dueller = sum(type.name == "Duel")
+  )
+
+
+# -------- MÆND (TOTAL) --------
+mænd_total <- all_premier_league_mænd_events %>%
+  summarise(
+    fejl_afleveringer = sum(type.name == "Pass" & !is.na(pass.outcome.name)),
+    missede_skud = sum(type.name == "Shot" & shot.outcome.name != "Goal", na.rm = TRUE),
+    fouls = sum(type.name == "Foul Committed"),
+    boldtab = sum(type.name %in% c("Dispossessed", "Miscontrol")),
+    dueller = sum(type.name == "Duel")
+  )
+
+
+# -------- PLOT DATA --------
+plot_data <- data.frame(
+  køn = c("Kvinder", "Mænd"),
+  fejl_afleveringer = c(kvinder_total$fejl_afleveringer, mænd_total$fejl_afleveringer),
+  missede_skud = c(kvinder_total$missede_skud, mænd_total$missede_skud),
+  fouls = c(kvinder_total$fouls, mænd_total$fouls),
+  boldtab = c(kvinder_total$boldtab, mænd_total$boldtab),
+  dueller = c(kvinder_total$dueller, mænd_total$dueller)
+)
+
+plot_data_long <- plot_data %>%
+  pivot_longer(cols = -køn, names_to = "type", values_to = "værdi")
+
+# pæne labels
+plot_data_long$type <- recode(plot_data_long$type,
+                              fejl_afleveringer = "Fejl afleveringer",
+                              missede_skud = "Missede skud",
+                              fouls = "Frispark begået",
+                              boldtab = "Boldtab",
+                              dueller = "Dueller"
+)
+
+# -------- PLOT --------
+ggplot(plot_data_long, aes(x = køn, y = værdi, fill = type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(aes(label = værdi),
+            position = position_dodge(width = 0.9),
+            vjust = -0.3) +
+  labs(
+    title = "Sammenligning af totale events i Premeier League",
+    x = "Køn",
+    y = "Antal events",
+    fill = "Event type"
+  )
