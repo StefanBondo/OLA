@@ -1,0 +1,89 @@
+library(DBI)
+library(RMariaDB)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggsoccer)
+library(glue)
+
+con <- dbConnect(
+  MariaDB(),
+  host = "www.talmedos.com",
+  port = 3306,
+  db = "superliga2",
+  user = "dalremote",
+  password = "OttoRehagel123456789Long2026!"
+)
+
+# ------------------------------------------------------------
+# PARAMETRE
+# ------------------------------------------------------------
+comp_id <- 335
+date_from <- as.Date("2025-07-01")
+date_to <- as.Date("2026-06-01")
+
+library(DBI)
+
+passes_df <- dbGetQuery(con, paste0("
+SELECT
+    p.EVENT_WYID,
+    MAX(p.MATCH_WYID) AS MATCH_WYID,
+    MAX(p.COMPETITION_WYID) AS COMPETITION_WYID,
+    
+    MAX(m.DATEUTC) AS match_date,
+    MAX(m.MATCHLABEL) AS match_label,
+    
+    MAX(c.MATCHPERIOD) AS MATCHPERIOD,
+    MAX(c.MINUTE) AS event_minute,
+    MAX(c.SECOND) AS event_second,
+    
+    MAX(c.PLAYER_WYID) AS passer_wyid,
+    MAX(CONCAT(pl1.FIRSTNAME, ' ', pl1.LASTNAME)) AS passer_name,
+    
+    MAX(p.RECIPIENT_WYID) AS recipient_wyid,
+    MAX(CONCAT(pl2.FIRSTNAME, ' ', pl2.LASTNAME)) AS recipient_name,
+    
+    MAX(p.PRIMARYTYPE) AS PRIMARYTYPE,
+    MAX(p.ACCURATE) AS ACCURATE,
+    MAX(p.ANGLE) AS ANGLE,
+    MAX(p.HEIGHT) AS HEIGHT,
+    MAX(p.LENGTH) AS LENGTH,
+    MAX(p.ENDLOCATIONX) AS ENDLOCATIONX,
+    MAX(p.ENDLOCATIONY) AS ENDLOCATIONY,
+    
+    MAX(s.PRIMARYTYPE) AS secondary_primarytype,
+    MAX(s.SECONDARYTYPE1) AS SECONDARYTYPE1,
+    MAX(s.SECONDARYTYPE2) AS SECONDARYTYPE2,
+    MAX(s.SECONDARYTYPE3) AS SECONDARYTYPE3,
+    MAX(s.SECONDARYTYPE4) AS SECONDARYTYPE4,
+    MAX(s.SECONDARYTYPE5) AS SECONDARYTYPE5,
+    MAX(s.SECONDARYTYPE6) AS SECONDARYTYPE6,
+    MAX(s.SECONDARYTYPE7) AS SECONDARYTYPE7
+
+FROM wyscout_matchevents_passes p
+
+LEFT JOIN wyscout_matchevents_common c
+    ON p.EVENT_WYID = c.EVENT_WYID
+   AND p.MATCH_WYID = c.MATCH_WYID
+   AND p.COMPETITION_WYID = c.COMPETITION_WYID
+
+LEFT JOIN wyscout_matches m
+    ON p.MATCH_WYID = m.MATCH_WYID
+
+LEFT JOIN wyscout_players pl1
+    ON c.PLAYER_WYID = pl1.PLAYER_WYID
+
+LEFT JOIN wyscout_players pl2
+    ON p.RECIPIENT_WYID = pl2.PLAYER_WYID
+
+LEFT JOIN wyscout_matchevents_secondarytype s
+    ON p.EVENT_WYID = s.EVENT_WYID
+   AND p.MATCH_WYID = s.MATCH_WYID
+   AND p.COMPETITION_WYID = s.COMPETITION_WYID
+
+WHERE 
+    p.COMPETITION_WYID = ", comp_id, "
+    AND DATE(m.DATEUTC) BETWEEN '", date_from, "' AND '", date_to, "'
+
+GROUP BY p.EVENT_WYID
+"))
