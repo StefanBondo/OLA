@@ -22,7 +22,7 @@ comp_id <- 335
 date_from <- as.Date("2025-07-01")
 date_to <- as.Date("2026-06-01")
 
-library(DBI)
+
 
 passes_df <- dbGetQuery(con, paste0("
 SELECT
@@ -39,9 +39,11 @@ SELECT
     
     MAX(c.PLAYER_WYID) AS passer_wyid,
     MAX(CONCAT(pl1.FIRSTNAME, ' ', pl1.LASTNAME)) AS passer_name,
+    MAX(t1.TEAMNAME) AS passer_team_name,
     
     MAX(p.RECIPIENT_WYID) AS recipient_wyid,
     MAX(CONCAT(pl2.FIRSTNAME, ' ', pl2.LASTNAME)) AS recipient_name,
+    MAX(COALESCE(t2.TEAMNAME, t1.TEAMNAME)) AS recipient_team_name,
     
     MAX(p.PRIMARYTYPE) AS PRIMARYTYPE,
     MAX(p.ACCURATE) AS ACCURATE,
@@ -76,6 +78,19 @@ LEFT JOIN wyscout_players pl1
 LEFT JOIN wyscout_players pl2
     ON p.RECIPIENT_WYID = pl2.PLAYER_WYID
 
+LEFT JOIN wyscout_teams t1
+    ON c.TEAM_WYID = t1.TEAM_WYID
+   AND m.SEASON_WYID = t1.SEASON_WYID
+
+LEFT JOIN wyscout_matchdetail_players mdp2
+    ON p.MATCH_WYID = mdp2.MATCH_WYID
+   AND p.COMPETITION_WYID = mdp2.COMPETITION_WYID
+   AND p.RECIPIENT_WYID = mdp2.PLAYER_WYID
+
+LEFT JOIN wyscout_teams t2
+    ON mdp2.TEAM_WYID = t2.TEAM_WYID
+   AND m.SEASON_WYID = t2.SEASON_WYID
+
 LEFT JOIN wyscout_matchevents_secondarytype s
     ON p.EVENT_WYID = s.EVENT_WYID
    AND p.MATCH_WYID = s.MATCH_WYID
@@ -87,3 +102,6 @@ WHERE
 
 GROUP BY p.EVENT_WYID
 "))
+
+Brønby_afleveringer <- passes_df %>% filter(passer_team_name == "Brøndby")
+
