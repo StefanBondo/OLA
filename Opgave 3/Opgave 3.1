@@ -1,0 +1,403 @@
+library(dplyr)
+library(plotly)
+library(ggplot2)
+library(ggrepel)
+
+passes_df <- passes_df %>%
+  mutate(
+    successful_pass = ifelse(
+      coalesce(SECONDARYTYPE1, "") == "loss" |
+        coalesce(SECONDARYTYPE2, "") == "loss" |
+        coalesce(SECONDARYTYPE3, "") == "loss" |
+        coalesce(SECONDARYTYPE4, "") == "loss" |
+        coalesce(SECONDARYTYPE5, "") == "loss" |
+        coalesce(SECONDARYTYPE6, "") == "loss" |
+        coalesce(SECONDARYTYPE7, "") == "loss",
+      0, 1
+    )
+  )
+
+passes_df %>%
+  summarise(
+    succesrate_pct = mean(successful_pass, na.rm = TRUE) * 100
+  )
+
+
+team <- passes_df %>%
+  filter(!is.na(LENGTH)) %>%
+  group_by(team_name) %>%
+  summarise(
+    mean_length = mean(LENGTH, na.rm = TRUE),
+    success_rate = mean(successful_pass, na.rm = TRUE),
+    antal_afleveringer = n(),
+    .groups = "drop"
+  )
+
+print(team)
+
+features_team <- team %>%
+  select(mean_length, success_rate)
+
+features_team_scaled <- scale(features_team)
+
+wss <- numeric(10)
+
+for (k in 1:10) {
+  km <- kmeans(features_team_scaled, centers = k, nstart = 10)
+  wss[k] <- km$tot.withinss
+}
+
+plot(1:10, wss, type = "b",
+     xlab = "Antal clusters",
+     ylab = "WSS",
+     main = "Elbow metode - Hold")
+
+set.seed(123)
+
+kmeans_team <- kmeans(features_team_scaled, centers = 3, nstart = 25)
+
+team$cluster <- as.factor(kmeans_team$cluster)
+
+
+
+team <- team %>%
+  mutate(cluster_name = case_when(
+    cluster == 1 ~ "Direkte og risikobaserede hold",
+    cluster == 2 ~ "Kontrollerende possessionshold",
+    cluster == 3 ~ "Balancerede hold"
+  ))
+
+p_team <- ggplot(team, aes(
+  x = mean_length,
+  y = success_rate,
+  color = cluster_name,
+  text = paste(
+    "Hold:", team_name,
+    "<br>Længde:", round(mean_length, 1),
+    "<br>Succesrate:", round(success_rate, 2),
+    "<br>Antal afleveringer:", antal_afleveringer
+  )
+)) +
+  geom_point(size = 4, alpha = 0.8) +
+  labs(
+    title = "Superliga-hold varierer i spillestil gennem forskelle i afleveringslængde, succesrate og volumen",
+    x = "Gennemsnitlig længde",
+    y = "Succesrate",
+    color = "Holdtype"
+  ) +
+  theme_minimal()
+
+ggplotly(p_team, tooltip = "text")
+
+
+# =========================================================
+# 1. BRØNDBY-SPILLERE: DATA
+# =========================================================
+
+brondby_df <- passes_df %>%
+  filter(team_name == "Brøndby IF") %>%
+  filter(!is.na(LENGTH), !is.na(successful_pass), !is.na(passer_name)) %>%
+  mutate(
+    LENGTH = as.numeric(LENGTH),
+    successful_pass = as.numeric(successful_pass)
+  ) %>%
+  group_by(passer_name) %>%
+  summarise(
+    mean_length = mean(LENGTH, na.rm = TRUE),
+    success_rate = mean(successful_pass, na.rm = TRUE),
+    antal_afleveringer = n(),
+    .groups = "drop"
+  ) %>%
+  filter(
+    is.finite(mean_length),
+    is.finite(success_rate)
+  )
+
+print(brondby_df)
+
+# =========================================================
+# 2. FEATURES + SCALING
+# =========================================================
+
+features_players <- brondby_df %>%
+  select(mean_length, success_rate)
+
+features_players_scaled <- scale(features_players)
+
+# =========================================================
+# 3. ELBOW-METODE
+# =========================================================
+
+n_distinct_points <- features_players %>%
+  distinct(mean_length, success_rate) %>%
+  nrow()
+
+max_k <- min(6, n_distinct_points - 1)
+
+if (max_k < 1) stop("For få unikke datapunkter til clustering.")
+
+wss <- numeric(max_k)
+
+for (k in 1:max_k) {
+  km <- kmeans(features_players_scaled, centers = k, nstart = 10)
+  wss[k] <- km$tot.withinss
+}
+
+elbow_df <- data.frame(
+  k = 1:max_k,
+  wss = wss
+)
+
+ggplot(elbow_df, aes(x = k, y = wss)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Elbow-metode - Brøndby-spillere",
+    x = "Antal clusters",
+    y = "Within-cluster sum of squares"
+  ) +
+  theme_minimal()
+
+# =========================================================
+# 4. VÆLG ANTAL CLUSTERS
+# =========================================================
+# Justér efter elbow-plot, fx 3
+
+k_valgt <- min(3, max_k)
+
+set.seed(123)
+kmeans_players <- kmeans(features_players_scaled, centers = k_valgt, nstart = 25)
+
+brondby_df$cluster <- as.factor(kmeans_players$cluster)
+
+print(brondby_df)
+
+# =========================================================
+# 5. INTERAKTIVT PLOT
+# =========================================================
+
+# Tilføj faglige cluster-navne
+brondby_df <- brondby_df %>%
+  mutate(cluster_name = case_when(
+    cluster == 1 ~ "Boldsikre opspilsspillere",
+    cluster == 2 ~ "Direkte og risikobaserede spillere",
+    cluster == 3 ~ "Korte kombinationsspillere"
+  ))
+
+# Plot med faglige cluster-navne
+p_players <- ggplot(brondby_df, aes(
+  x = mean_length,
+  y = success_rate,
+  color = cluster_name,
+  text = paste(
+    "Spiller:", passer_name,
+    "<br>Gns. længde:", round(mean_length, 1),
+    "<br>Succesrate:", round(success_rate, 2),
+    "<br>Antal afleveringer:", antal_afleveringer
+  )
+)) +
+  geom_point(size = 4, alpha = 0.8) +
+  labs(
+    title = "Forskellige afleveringsprofiler hos Brøndby IF",
+    x = "Gennemsnitlig længde",
+    y = "Succesrate",
+    color = "Spillertype"
+  ) +
+  theme_minimal()
+
+ggplotly(p_players, tooltip = "text")
+
+
+
+# =========================================================
+# 1. FEATURE ENGINEERING (progressive passes)
+# =========================================================
+
+passes_cluster <- passes_df %>%
+  mutate(
+    successful_pass = as.numeric(successful_pass),
+    
+    progressive_flag = ifelse(
+      SECONDARYTYPE1 == "progressive_pass" |
+        SECONDARYTYPE2 == "progressive_pass" |
+        SECONDARYTYPE3 == "progressive_pass" |
+        SECONDARYTYPE4 == "progressive_pass" |
+        SECONDARYTYPE5 == "progressive_pass" |
+        SECONDARYTYPE6 == "progressive_pass" |
+        SECONDARYTYPE7 == "progressive_pass",
+      1, 0
+    )
+  )
+
+# =========================================================
+# ================= HOLDNIVEAU =============================
+# =========================================================
+
+team_df <- passes_cluster %>%
+  filter(!is.na(team_name)) %>%
+  group_by(team_name) %>%
+  summarise(
+    success_rate = mean(successful_pass, na.rm = TRUE),
+    progressive_rate = mean(progressive_flag, na.rm = TRUE),
+    antal_afleveringer = n(),
+    .groups = "drop"
+  ) %>%
+  filter(
+    is.finite(success_rate),
+    is.finite(progressive_rate)
+  )
+
+print(team_df)
+
+# ---------------- ELBOW ----------------
+
+features_team <- team_df %>%
+  select(success_rate, progressive_rate)
+
+features_team_scaled <- scale(features_team)
+
+n_distinct_team <- features_team %>%
+  distinct() %>%
+  nrow()
+
+max_k_team <- min(6, n_distinct_team - 1)
+
+wss_team <- numeric(max_k_team)
+
+for (k in 1:max_k_team) {
+  km <- kmeans(features_team_scaled, centers = k, nstart = 10)
+  wss_team[k] <- km$tot.withinss
+}
+
+plot(1:max_k_team, wss_team, type = "b",
+     xlab = "Antal clusters",
+     ylab = "WSS",
+     main = "Elbow - Holdniveau")
+
+# ---------------- CLUSTER ----------------
+
+k_team <- min(3, max_k_team)
+
+set.seed(123)
+km_team <- kmeans(features_team_scaled, centers = k_team, nstart = 25)
+
+team_df$cluster <- as.factor(km_team$cluster)
+
+print(team_df)
+
+# ---------------- PLOT ----------------
+
+team_df <- team_df %>%
+  mutate(cluster_name = case_when(
+    cluster == 1 ~ "Direkte men mindre sikre hold",
+    cluster == 2 ~ "Kontrollerende possessionshold",
+    cluster == 3 ~ "Risikobaserede progressionshold"
+  ))
+
+p_team <- ggplot(team_df, aes(
+  x = progressive_rate,
+  y = success_rate,
+  color = cluster_name,
+  text = paste(
+    "Hold:", team_name,
+    "<br>Succesrate:", round(success_rate, 2),
+    "<br>Progressive:", round(progressive_rate, 2),
+    "<br>Antal afleveringer:", antal_afleveringer
+  )
+)) +
+  geom_point(size = 4, alpha = 0.8) +
+  labs(
+    title = "Superliga-hold balancerer mellem boldkontrol og risikovillig fremdrift i deres pasningsspil",
+    x = "Andel progressive afleveringer",
+    y = "Succesrate",
+    color = "Holdtype"
+  ) +
+  theme_minimal()
+
+ggplotly(p_team, tooltip = "text")
+
+# =========================================================
+# ================= BRØNDBY SPILLERE =======================
+# =========================================================
+
+brondby_df <- passes_cluster %>%
+  filter(team_name == "Brøndby IF") %>%
+  filter(!is.na(passer_name)) %>%      # fjern NA navne
+  filter(passer_wyid != 0) %>%         # fjern fake spillere
+  group_by(passer_name) %>%
+  summarise(
+    success_rate = mean(successful_pass, na.rm = TRUE),
+    progressive_rate = mean(progressive_flag, na.rm = TRUE),
+    antal_afleveringer = n(),
+    .groups = "drop"
+  )
+
+print(brondby_df)
+
+# ---------------- ELBOW ----------------
+
+features_players <- brondby_df %>%
+  select(success_rate, progressive_rate)
+
+features_players_scaled <- scale(features_players)
+
+n_distinct_players <- features_players %>%
+  distinct() %>%
+  nrow()
+
+max_k_players <- min(6, n_distinct_players - 1)
+
+wss_players <- numeric(max_k_players)
+
+for (k in 1:max_k_players) {
+  km <- kmeans(features_players_scaled, centers = k, nstart = 10)
+  wss_players[k] <- km$tot.withinss
+}
+
+plot(1:max_k_players, wss_players, type = "b",
+     xlab = "Antal clusters",
+     ylab = "WSS",
+     main = "Elbow - Brøndby spillere")
+
+# ---------------- CLUSTER ----------------
+
+k_players <- min(3, max_k_players)
+
+set.seed(123)
+km_players <- kmeans(features_players_scaled, centers = k_players, nstart = 25)
+
+brondby_df$cluster <- as.factor(km_players$cluster)
+
+print(brondby_df)
+
+# ---------------- PLOT ----------------
+
+brondby_df <- brondby_df %>%
+  mutate(cluster_name = case_when(
+    cluster == 1 ~ "Boldsikre opspilsspillere",
+    cluster == 2 ~ "Risikable boldprogressorer",
+    cluster == 3 ~ "Effektive progressive playmakere"
+  ))
+
+
+p_players <- ggplot(brondby_df, aes(
+  x = progressive_rate,
+  y = success_rate,
+  color = cluster_name,
+  text = paste(
+    "Spiller:", passer_name,
+    "<br>Succesrate:", round(success_rate, 2),
+    "<br>Progressive:", round(progressive_rate, 2),
+    "<br>Antal afleveringer:", antal_afleveringer
+  )
+)) +
+  geom_point(size = 4, alpha = 0.8) +
+  labs(
+    title = "Brøndbys spillere fordeler sig mellem sikre opspilsspillere og fremadrettede nøglespillere",
+    x = "Andel progressive afleveringer",
+    y = "Succesrate",
+    color = "Spillertype"
+  ) +
+  theme_minimal()
+
+ggplotly(p_players, tooltip = "text")
