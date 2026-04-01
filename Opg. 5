@@ -1,0 +1,669 @@
+source("util.R")
+install.packages("plotly")
+library(plotly)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(ggsoccer)
+library(stringr)
+
+theme_set(theme_minimal(base_size = 12))
+
+# -----------------------------
+# 1) Hent og standardiser data
+# -----------------------------
+AllMatches <- getAllMatches() %>%
+  mutate(match_date = as.Date(match_date))
+
+# Kvinder: UEFA Euro 2022 (competition_id = 53)
+MatchesWomen <- AllMatches %>%
+  filter(competition.competition_id == 53) %>%
+  filter(match_date >= as.Date("2022-07-06"), match_date <= as.Date("2022-07-31"))
+
+# Mænd: UEFA Euro 2024 (competition_id = 55)
+MatchesMen <- AllMatches %>%
+  filter(competition.competition_id == 55) %>%
+  filter(match_date >= as.Date("2024-06-14"), match_date <= as.Date("2024-07-14"))
+
+EventsWomen_raw <- getAllEventsMultipleMatches(MatchesWomen$match_id, gender = "f")
+EventsMen_raw <- getAllEventsMultipleMatches(MatchesMen$match_id, gender = "m")
+
+EventsMen <- EventsMen_raw %>%
+  rename(match_id = matchId) %>%
+  mutate(gender = "Men")
+
+EventsWomen <- EventsWomen_raw %>%
+  mutate(gender = "Women")
+
+common_cols <- intersect(names(EventsWomen), names(EventsMen))
+EventsCombined <- bind_rows(
+  EventsWomen %>% select(all_of(common_cols)),
+  EventsMen %>% select(all_of(common_cols))
+)
+
+cat("Rows Women:", nrow(EventsWomen), "\n")
+cat("Rows Men:", nrow(EventsMen), "\n")
+cat("Rows Combined:", nrow(EventsCombined), "\n")
+
+# -----------------------------
+# 2) Opgave 5.1 - Kampe i tal
+# -----------------------------
+# Match-profiler (ét datapunkt per match)
+match_profile <- EventsCombined %>%
+  group_by(gender, match_id) %>%
+  summarise(
+    passes = sum(type.name == "Pass", na.rm = TRUE),
+    pass_success_rate = mean(type.name == "Pass" & is.na(pass.outcome.name), na.rm = TRUE),
+    mean_pass_length = mean(pass.length[type.name == "Pass"], na.rm = TRUE),
+    shots = sum(type.name == "Shot", na.rm = TRUE),
+    mean_shot_xg = mean(shot.statsbomb_xg[type.name == "Shot"], na.rm = TRUE),
+    dribbles = sum(type.name == "Dribble", na.rm = TRUE),
+    dribble_success_rate = mean(dribble.outcome.name[type.name == "Dribble"] == "Complete", na.rm = TRUE),
+    duels = sum(type.name == "Duel", na.rm = TRUE),
+    pressure_rate = mean(under_pressure == TRUE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.nan(.x) | is.infinite(.x), NA_real_, .x)))
+
+# Samlet køns-sammenligning
+gender_summary <- match_profile %>%
+  group_by(gender) %>%
+  summarise(
+    mean_passes = mean(passes, na.rm = TRUE),
+    mean_pass_success = mean(pass_success_rate, na.rm = TRUE),
+    mean_pass_length = mean(mean_pass_length, na.rm = TRUE),
+    mean_shots = mean(shots, na.rm = TRUE),
+    mean_shot_xg = mean(mean_shot_xg, na.rm = TRUE),
+    mean_dribble_success = mean(dribble_success_rate, na.rm = TRUE),
+    mean_pressure_rate = mean(pressure_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(gender_summary)
+
+# Enkle t-tests som "statistisk belæg"
+run_ttest <- function(df, varname) {
+  f <- as.formula(paste0(varname, " ~ gender"))
+  out <- tryCatch(t.test(f, data = df), error = function(e) NULL)
+  if (is.null(out)) return(tibble(metric = varname, p_value = NA_real_, conf_low = NA_real_, conf_high = NA_real_))
+  tibble(
+    metric = varname,
+    p_value = out$p.value,
+    conf_low = out$conf.int[1],
+    conf_high = out$conf.int[2]
+  )
+}
+
+ttest_results <- bind_rows(
+  run_ttest(match_profile, "passes"),
+  run_ttest(match_profile, "pass_success_rate"),
+  run_ttest(match_profile, "mean_pass_length"),
+  run_ttest(match_profile, "shots"),
+  run_ttest(match_profile, "mean_shot_xg"),
+  run_ttest(match_profile, "dribble_success_rate"),
+  run_ttest(match_profile, "pressure_rate")
+)
+
+print(ttest_results)
+
+# -------- Visualisering A: KPI bars --------
+kpi_plot_data <- match_profile %>%
+  group_by(gender) %>%
+  summarise(
+    Passes = mean(passes, na.rm = TRUE),
+    `Pass success` = mean(pass_success_rate, na.rm = TRUE),
+    `Pass length` = mean(mean_pass_length, na.rm = TRUE),
+    Shots = mean(shots, na.rm = TRUE),
+    `Shot xG` = mean(mean_shot_xg, na.rm = TRUE),
+    `Dribble success` = mean(dribble_success_rate, na.rm = TRUE),
+    `Under pressure` = mean(pressure_rate, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(-gender, names_to = "metric", values_to = "value")
+
+p_kpi <- ggplot(kpi_plot_data, aes(x = metric, y = value, fill = gender)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  labs(
+    title = "Opgave 5.1: Gennemsnitlige kamp-KPI'er",
+    subtitle = "Sammenligning mellem Women Euro 2022 og Men Euro 2024",
+    x = NULL, y = "Gennemsnit"
+  ) +
+  scale_fill_manual(values = c("Women" = "#d81b60", "Men" = "#1e88e5")) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+
+print(p_kpi)
+
+# -------- Visualisering B: Passelængde-density --------
+pass_events <- EventsCombined %>%
+  filter(type.name == "Pass", !is.na(pass.length), is.finite(pass.length))
+
+p_pass_density <- ggplot(pass_events, aes(x = pass.length, fill = gender, color = gender)) +
+  geom_density(alpha = 0.25, linewidth = 1) +
+  labs(
+    title = "Fordeling af afleveringslængde",
+    subtitle = "Hele eventniveauet for kampe i analysen",
+    x = "Pass length", y = "Densitet"
+  ) +
+  scale_fill_manual(values = c("Women" = "#d81b60", "Men" = "#1e88e5")) +
+  scale_color_manual(values = c("Women" = "#d81b60", "Men" = "#1e88e5"))
+
+print(p_pass_density)
+
+# -------- Visualisering C: Shot-map/heatmap --------
+extract_xy <- function(loc) {
+  if (is.null(loc) || length(loc) < 2) return(c(NA_real_, NA_real_))
+  c(as.numeric(loc[[1]]), as.numeric(loc[[2]]))
+}
+
+shots_xy <- EventsCombined %>%
+  filter(type.name == "Shot", !is.na(location)) %>%
+  mutate(
+    sx = map_dbl(location, ~ extract_xy(.x)[1]),
+    sy = map_dbl(location, ~ extract_xy(.x)[2])
+  ) %>%
+  filter(!is.na(sx), !is.na(sy))
+
+p_shot_map <- ggplot(shots_xy, aes(x = sx, y = sy)) +
+  annotate_pitch(dimensions = pitch_statsbomb, colour = "grey30", fill = "#f9f9f9") +
+  geom_bin2d(binwidth = c(6, 6), alpha = 0.9) +
+  scale_fill_viridis_c(option = "C", trans = "sqrt") +
+  coord_flip(xlim = c(80, 121)) +
+  scale_y_reverse() +
+  facet_wrap(~ gender) +
+  theme_pitch() +
+  labs(
+    title = "Hvor bliver der skudt fra?",
+    subtitle = "2D-shot heatmap fordelt på køn",
+    fill = "Antal skud"
+  )
+
+print(p_shot_map)
+
+# -------- Visualisering D: Spilstilsprofil (uden clustering) --------
+# Mere enkel og aflæselig: få variable ad gangen
+
+profile_vars <- c("pass_success_rate", "mean_pass_length", "shots", "mean_shot_xg")
+profile_labels <- c(
+  pass_success_rate = "Afleveringssikkerhed",
+  mean_pass_length = "Afleveringslængde",
+  shots = "Skud pr. kamp",
+  mean_shot_xg = "xG pr. skud"
+)
+
+profile_long <- match_profile %>%
+  select(gender, all_of(profile_vars)) %>%
+  pivot_longer(cols = all_of(profile_vars), names_to = "metric", values_to = "value") %>%
+  mutate(metric = factor(metric, levels = profile_vars, labels = unname(profile_labels)))
+
+p_profile_box <- ggplot(profile_long, aes(x = gender, y = value, fill = gender)) +
+  geom_boxplot(alpha = 0.65, width = 0.6, outlier.alpha = 0.45) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Spilstilsprofil: mænd vs. kvinder",
+    subtitle = "4 nøglemål pr. kamp (simpel sammenligning)",
+    x = NULL, y = "Værdi"
+  ) +
+  scale_fill_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
+  theme(legend.position = "none")
+
+print(p_profile_box)
+
+# Matchniveau-scatter med kun 2 akser + tydelig hover
+scatter_df <- match_profile %>%
+  select(gender, match_id, pass_success_rate, mean_pass_length, shots, mean_shot_xg) %>%
+  drop_na()
+
+if (nrow(scatter_df) > 0) {
+  scatter_df <- scatter_df %>%
+    mutate(
+      hover_txt = paste0(
+        "Match ID: ", match_id,
+        "<br>Køn: ", gender,
+        "<br>Afleveringssikkerhed: ", scales::percent(pass_success_rate, accuracy = 0.1),
+        "<br>Afleveringslængde: ", round(mean_pass_length, 1),
+        "<br>Skud pr. kamp: ", round(shots, 1),
+        "<br>xG pr. skud: ", round(mean_shot_xg, 3)
+      )
+    )
+
+  p_style_scatter <- ggplot(
+    scatter_df,
+    aes(
+      x = mean_pass_length,
+      y = pass_success_rate,
+      color = gender,
+      shape = gender,
+      size = shots
+    )
+  ) +
+    geom_point(alpha = 0.75) +
+    labs(
+      title = "Spilstil i 2D (uden cluster)",
+      subtitle = "X: afleveringslængde, Y: afleveringssikkerhed, boblestørrelse: skud pr. kamp",
+      x = "Afleveringslængde (gennemsnit pr. kamp)",
+      y = "Afleveringssikkerhed",
+      color = "Køn",
+      shape = "Køn",
+      size = "Skud pr. kamp"
+    ) +
+    scale_color_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
+    scale_shape_manual(values = c("Men" = 17, "Women" = 16)) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    theme(legend.position = "bottom")
+
+  print(p_style_scatter)
+
+  if (requireNamespace("plotly", quietly = TRUE)) {
+    p_style_scatter_interactive <- ggplot(
+      scatter_df,
+      aes(
+        x = mean_pass_length,
+        y = pass_success_rate,
+        color = gender,
+        shape = gender,
+        size = shots,
+        text = hover_txt
+      )
+    ) +
+      geom_point(alpha = 0.75) +
+      labs(
+        title = "Interaktiv spilstilsfigur (hover for detaljer)",
+        x = "Afleveringslængde (gennemsnit pr. kamp)",
+        y = "Afleveringssikkerhed",
+        color = "Køn",
+        shape = "Køn",
+        size = "Skud pr. kamp"
+      ) +
+      scale_color_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
+      scale_shape_manual(values = c("Men" = 17, "Women" = 16)) +
+      scale_y_continuous(labels = scales::percent_format()) +
+      theme(legend.position = "bottom")
+
+    print(plotly::ggplotly(p_style_scatter_interactive, tooltip = "text"))
+  } else {
+    message("Installér 'plotly' for hover-plot: install.packages('plotly')")
+  }
+}
+
+
+
+Opg. 5.2
+
+# -----------------------------
+# 3) Opgave 5.2 - Freeze frame
+# -----------------------------
+# Hypotese:
+# "Større andel af skud hos mænd burde have været aflevering til bedre placeret medspiller"
+#
+# Justering:
+# En medspiller tæller KUN som bedre mulighed, hvis:
+# 1) spilleren har en bedre scoringsposition end skytten
+# 2) der IKKE står en modstander i afleveringsbanen mellem skytte og medspiller
+
+freeze_shots <- EventsCombined %>%
+  filter(
+    type.name == "Shot",
+    !is.na(shot.freeze_frame),
+    !is.na(location)
+  ) %>%
+  mutate(
+    sx = map_dbl(location, ~ extract_xy(.x)[1]),
+    sy = map_dbl(location, ~ extract_xy(.x)[2])
+  ) %>%
+  filter(!is.na(sx), !is.na(sy))
+
+# -----------------------------
+# Hjælpefunktioner
+# -----------------------------
+
+extract_ff_xy <- function(ff_loc) {
+  if (is.null(ff_loc) || length(ff_loc) < 2) {
+    return(c(NA_real_, NA_real_))
+  }
+  c(as.numeric(ff_loc[[1]]), as.numeric(ff_loc[[2]]))
+}
+
+score_position <- function(px, py, opp_count) {
+  # Mere "åben" vinkel + færre modstandere giver højere score
+  angle <- mxangle(c(px, py))
+  dist  <- disttogoal(c(px, py))
+  area  <- calculate_triangle_area_goal(px, py)
+  
+  # Enkel, forklarbar sammensat score
+  (angle * sqrt(area)) / ((1 + opp_count) * (1 + dist / 10))
+}
+
+# Afstand fra punkt til linjestykke
+point_to_segment_distance <- function(px, py, x1, y1, x2, y2) {
+  dx <- x2 - x1
+  dy <- y2 - y1
+  
+  if (dx == 0 && dy == 0) {
+    return(sqrt((px - x1)^2 + (py - y1)^2))
+  }
+  
+  t <- ((px - x1) * dx + (py - y1) * dy) / (dx^2 + dy^2)
+  t <- max(0, min(1, t))
+  
+  proj_x <- x1 + t * dx
+  proj_y <- y1 + t * dy
+  
+  sqrt((px - proj_x)^2 + (py - proj_y)^2)
+}
+
+# Tjekker om en modstander står i afleveringsbanen mellem skytte og medspiller
+is_opponent_blocking_pass_lane <- function(ox, oy, sx, sy, tx, ty,
+                                           lane_width = 2.5,
+                                           min_along = 0.05,
+                                           max_along = 0.95) {
+  dx <- tx - sx
+  dy <- ty - sy
+  seg_len2 <- dx^2 + dy^2
+  
+  if (seg_len2 == 0) return(FALSE)
+  
+  # Position langs afleveringslinjen:
+  # t = 0 ved skytten, t = 1 ved modtageren
+  t <- ((ox - sx) * dx + (oy - sy) * dy) / seg_len2
+  
+  # Kun modstandere der faktisk står mellem skytte og modtager tæller
+  if (t <= min_along || t >= max_along) return(FALSE)
+  
+  dist_line <- point_to_segment_distance(ox, oy, sx, sy, tx, ty)
+  
+  dist_line <= lane_width
+}
+
+evaluate_shot_option <- function(shot_row) {
+  ff <- shot_row$shot.freeze_frame[[1]]
+  
+  if (is.null(ff) || nrow(ff) == 0) {
+    return(tibble(
+      has_better_option = NA,
+      best_delta = NA_real_,
+      best_tx = NA_real_,
+      best_ty = NA_real_
+    ))
+  }
+  
+  ff <- as_tibble(ff)
+  
+  if (!("teammate" %in% names(ff)) || !("location" %in% names(ff))) {
+    return(tibble(
+      has_better_option = NA,
+      best_delta = NA_real_,
+      best_tx = NA_real_,
+      best_ty = NA_real_
+    ))
+  }
+  
+  ff <- ff %>%
+    mutate(
+      px = map_dbl(location, ~ extract_ff_xy(.x)[1]),
+      py = map_dbl(location, ~ extract_ff_xy(.x)[2])
+    ) %>%
+    filter(!is.na(px), !is.na(py))
+  
+  if (nrow(ff) == 0) {
+    return(tibble(
+      has_better_option = NA,
+      best_delta = NA_real_,
+      best_tx = NA_real_,
+      best_ty = NA_real_
+    ))
+  }
+  
+  opponents <- ff %>% filter(teammate == FALSE)
+  teammates <- ff %>% filter(teammate == TRUE)
+  
+  if (nrow(teammates) == 0) {
+    return(tibble(
+      has_better_option = FALSE,
+      best_delta = NA_real_,
+      best_tx = NA_real_,
+      best_ty = NA_real_
+    ))
+  }
+  
+  shooter_x <- shot_row$sx
+  shooter_y <- shot_row$sy
+  
+  # Hvor mange modstandere står i skyttens vinkel mod mål?
+  shooter_opp <- if (nrow(opponents) == 0) {
+    0
+  } else {
+    sum(
+      mapply(
+        is_opponent_inside_triangle,
+        opponents$px,
+        opponents$py,
+        MoreArgs = list(shooter_x = shooter_x, shooter_y = shooter_y)
+      )
+    )
+  }
+  
+  shooter_score <- score_position(shooter_x, shooter_y, shooter_opp)
+  
+  teammate_eval <- teammates %>%
+    rowwise() %>%
+    mutate(
+      # Ny logik: afleveringslinjen skal være fri
+      pass_blocked = if (nrow(opponents) == 0) {
+        FALSE
+      } else {
+        any(
+          mapply(
+            is_opponent_blocking_pass_lane,
+            opponents$px,
+            opponents$py,
+            MoreArgs = list(
+              sx = shooter_x,
+              sy = shooter_y,
+              tx = px,
+              ty = py,
+              lane_width = 2.5
+            )
+          )
+        )
+      },
+      
+      # Hvor mange modstandere står i modtagerens vinkel mod mål?
+      opp_in_tri = if (nrow(opponents) == 0) {
+        0
+      } else {
+        sum(
+          mapply(
+            is_opponent_inside_triangle,
+            opponents$px,
+            opponents$py,
+            MoreArgs = list(shooter_x = px, shooter_y = py)
+          )
+        )
+      },
+      
+      # Hvis afleveringen er blokeret, skal spilleren ikke tælle som mulighed
+      pos_score = ifelse(
+        pass_blocked,
+        NA_real_,
+        score_position(px, py, opp_in_tri)
+      ),
+      
+      delta = pos_score - shooter_score
+    ) %>%
+    ungroup() %>%
+    filter(!pass_blocked) %>%
+    arrange(desc(delta))
+  
+  if (nrow(teammate_eval) == 0) {
+    return(tibble(
+      has_better_option = FALSE,
+      best_delta = NA_real_,
+      best_tx = NA_real_,
+      best_ty = NA_real_
+    ))
+  }
+  
+  best <- teammate_eval %>% slice(1)
+  
+  # Krav: mindst 10% bedre score for at tælle som klart bedre placeret
+  has_better <- is.finite(best$delta) && (best$delta > abs(shooter_score) * 0.10)
+  
+  tibble(
+    has_better_option = has_better,
+    best_delta = best$delta,
+    best_tx = best$px,
+    best_ty = best$py
+  )
+}
+
+# Evaluer hvert skud direkte uden join
+freeze_res <- freeze_shots %>%
+  rowwise() %>%
+  mutate(eval = list(evaluate_shot_option(cur_data()))) %>%
+  ungroup() %>%
+  unnest(eval)
+
+# -----------------------------
+# Hypotesetabel
+# -----------------------------
+hypothesis_table <- freeze_res %>%
+  filter(!is.na(has_better_option)) %>%
+  group_by(gender) %>%
+  summarise(
+    n_shots_ff = n(),
+    better_option_share = mean(has_better_option, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(hypothesis_table)
+
+# -----------------------------
+# Visualisering:
+# andel skud med bedre afleveringsmulighed
+# -----------------------------
+p_hypothesis <- ggplot(hypothesis_table, aes(x = gender, y = better_option_share, fill = gender)) +
+  geom_col(width = 0.6) +
+  geom_text(
+    aes(label = scales::percent(better_option_share, accuracy = 0.1)),
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("Women" = "#d81b60", "Men" = "#1e88e5")) +
+  labs(
+    title = "Andel skud med bedre afleveringsmulighed",
+    subtitle = "Freeze-frame analyse af 'burde have afleveret'",
+    x = NULL,
+    y = "Andel"
+  ) +
+  guides(fill = "none")
+
+print(p_hypothesis)
+
+# -----------------------------
+# 4) To illustrative cases
+# -----------------------------
+case_plot <- function(shot_row, title_text) {
+  ff <- shot_row$shot.freeze_frame[[1]]
+  if (is.null(ff) || nrow(ff) == 0) return(NULL)
+  
+  ff <- as_tibble(ff) %>%
+    mutate(
+      x = map_dbl(location, ~ extract_ff_xy(.x)[1]),
+      y = map_dbl(location, ~ extract_ff_xy(.x)[2]),
+      who = ifelse(teammate, "Teammate", "Opponent")
+    ) %>%
+    filter(!is.na(x), !is.na(y))
+  
+  sx <- shot_row$sx
+  sy <- shot_row$sy
+  tx <- shot_row$best_tx
+  ty <- shot_row$best_ty
+  
+  p <- ggplot() +
+    annotate_pitch(dimensions = pitch_statsbomb, colour = "grey30", fill = "white") +
+    geom_point(data = ff, aes(x, y, color = who), size = 2.8, alpha = 0.85) +
+    geom_point(aes(x = sx, y = sy), size = 4, color = "goldenrod3") +
+    geom_segment(aes(x = sx, y = sy, xend = 120, yend = 36), linetype = "dashed", color = "goldenrod3") +
+    geom_segment(aes(x = sx, y = sy, xend = 120, yend = 44), linetype = "dashed", color = "goldenrod3") +
+    geom_point(aes(x = tx, y = ty), size = 4, color = "darkgreen") +
+    geom_segment(aes(x = tx, y = ty, xend = 120, yend = 36), linetype = "dashed", color = "darkgreen") +
+    geom_segment(aes(x = tx, y = ty, xend = 120, yend = 44), linetype = "dashed", color = "darkgreen") +
+    coord_flip(xlim = c(75, 121)) +
+    scale_y_reverse() +
+    theme_pitch() +
+    scale_color_manual(values = c("Teammate" = "#2e7d32", "Opponent" = "#b71c1c")) +
+    labs(
+      title = title_text,
+      subtitle = "Gul = skytte, Grøn = bedst placeret medspiller"
+    )
+  
+  p
+}
+
+case_men <- freeze_res %>%
+  filter(gender == "Men", has_better_option == TRUE) %>%
+  arrange(desc(best_delta)) %>%
+  slice(1)
+
+case_women <- freeze_res %>%
+  filter(gender == "Women", has_better_option == TRUE) %>%
+  arrange(desc(best_delta)) %>%
+  slice(1)
+
+if (nrow(case_men) == 1) {
+  print(case_plot(case_men[1, ], "Case 1: Mandekamp - tydelig bedre afleveringsmulighed"))
+}
+
+if (nrow(case_women) == 1) {
+  print(case_plot(case_women[1, ], "Case 2: Kvindekamp - tydelig bedre afleveringsmulighed"))
+}
+
+# -----------------------------
+# Ego-skud analyse
+# -----------------------------
+
+ego_table <- freeze_res %>%
+  filter(!is.na(has_better_option)) %>%
+  mutate(
+    ego_shot = has_better_option
+  ) %>%
+  group_by(gender) %>%
+  summarise(
+    n_shots = n(),
+    ego_share = mean(ego_shot, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(ego_table)
+
+# -----------------------------
+# Plot
+# -----------------------------
+
+p_ego <- ggplot(ego_table, aes(x = gender, y = ego_share, fill = gender)) +
+  geom_col(width = 0.6) +
+  geom_text(
+    aes(label = scales::percent(ego_share, accuracy = 0.1)),
+    vjust = -0.5,
+    size = 5
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    limits = c(0, max(ego_table$ego_share) * 1.15)
+  ) +
+  scale_fill_manual(values = c("Women" = "#d81b60", "Men" = "#1e88e5")) +
+  labs(
+    title = "Ego-skud: Andel skud hvor spilleren burde have afleveret",
+    subtitle = "Baseret på freeze-frame og fri afleveringslinje",
+    x = NULL,
+    y = "Andel ego-skud"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold")
+  )
+
+print(p_ego)
