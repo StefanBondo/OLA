@@ -1,0 +1,232 @@
+library(dplyr)
+
+# --------------------------------------------------
+# 1. Tilføj kampdato til xp_match_results
+# --------------------------------------------------
+xp_phase <- xp_match_results %>%
+  left_join(
+    xp_data %>%
+      distinct(MATCH_WYID, match_date),
+    by = "MATCH_WYID"
+  ) %>%
+  arrange(team_name, match_date, MATCH_WYID)
+
+# --------------------------------------------------
+# 2. Nummerér kampe pr hold
+# --------------------------------------------------
+xp_phase <- xp_phase %>%
+  group_by(team_name) %>%
+  mutate(kamp_nr = row_number()) %>%
+  ungroup()
+
+# --------------------------------------------------
+# 3. GRUNDSPIL (første 22 kampe)
+# --------------------------------------------------
+grundspil_table <- xp_phase %>%
+  filter(kamp_nr <= 22) %>%
+  group_by(team_name) %>%
+  summarise(
+    kampe = n(),
+    xP = sum(xP, na.rm = TRUE),
+    point = sum(faktiske_point, na.rm = TRUE),
+    diff = xP - point,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    xP = round(xP, 2),
+    diff = round(diff, 2)
+  ) %>%
+  arrange(desc(point), desc(xP))
+
+grundspil_table
+
+# --------------------------------------------------
+# 4. FIND TOP 6 (mesterskabsspil)
+# --------------------------------------------------
+mesterskabshold <- grundspil_table %>%
+  arrange(desc(point), desc(xP)) %>%
+  slice(1:6) %>%
+  pull(team_name)
+
+mesterskabshold
+
+# --------------------------------------------------
+# 5. TILFØJ FASE
+# --------------------------------------------------
+xp_phase <- xp_phase %>%
+  mutate(
+    fase = case_when(
+      kamp_nr <= 22 ~ "Grundspil",
+      kamp_nr > 22 & team_name %in% mesterskabshold ~ "Mesterskabsspil",
+      TRUE ~ "Kvalifikationsspil"
+    )
+  )
+
+# --------------------------------------------------
+# 6. MESTERSKABSSPIL
+# --------------------------------------------------
+xp_mesterskab <- xp_phase %>%
+  filter(fase == "Mesterskabsspil") %>%
+  group_by(team_name) %>%
+  summarise(
+    kampe = n(),
+    xP = sum(xP, na.rm = TRUE),
+    point = sum(faktiske_point, na.rm = TRUE),
+    diff = xP - point,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    xP = round(xP, 2),
+    diff = round(diff, 2)
+  ) %>%
+  arrange(desc(xP))
+
+xp_mesterskab
+
+xp_mesterskab %>%
+  gt() %>%
+  cols_label(
+    team_name = "Hold",
+    kampe = "Kampe",
+    xP = "xP",
+    point = "Point",
+    diff = "Forskel"
+  ) %>%
+  fmt_number(
+    columns = c(xP, diff),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = -team_name
+  ) %>%
+  tab_header(
+    title = "Mesterskabsspil – Expected Points (xP)",
+    subtitle = "Top 6 hold"
+  ) %>%
+  data_color(
+    columns = diff,
+    colors = scales::col_numeric(
+      palette = c("#d73027", "#ffffbf", "#1a9850"),
+      domain = c(min(xp_mesterskab$diff), max(xp_mesterskab$diff))
+    )
+  )
+
+# --------------------------------------------------
+# 7. KVALIFIKATIONSSPIL
+# --------------------------------------------------
+xp_kvalifikation <- xp_phase %>%
+  filter(fase == "Kvalifikationsspil") %>%
+  group_by(team_name) %>%
+  summarise(
+    kampe = n(),
+    xP = sum(xP, na.rm = TRUE),
+    point = sum(faktiske_point, na.rm = TRUE),
+    diff = xP - point,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    xP = round(xP, 2),
+    diff = round(diff, 2)
+  ) %>%
+  arrange(desc(xP))
+
+xp_kvalifikation
+
+xp_kvalifikation %>%
+  gt() %>%
+  cols_label(
+    team_name = "Hold",
+    kampe = "Kampe",
+    xP = "xP",
+    point = "Point",
+    diff = "Forskel"
+  ) %>%
+  fmt_number(
+    columns = c(xP, diff),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = -team_name
+  ) %>%
+  tab_header(
+    title = "Kvalifikationsspil – Expected Points (xP)",
+    subtitle = "Bund 6 hold"
+  ) %>%
+  data_color(
+    columns = diff,
+    colors = scales::col_numeric(
+      palette = c("#d73027", "#ffffbf", "#1a9850"),
+      domain = c(min(xp_kvalifikation$diff), max(xp_kvalifikation$diff))
+    )
+  )
+
+# --------------------------------------------------
+# 8. SAMLET TABEL MED FASER
+# --------------------------------------------------
+xp_faser <- xp_phase %>%
+  group_by(fase, team_name) %>%
+  summarise(
+    kampe = n(),
+    xP = sum(xP, na.rm = TRUE),
+    point = sum(faktiske_point, na.rm = TRUE),
+    diff = xP - point,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    xP = round(xP, 2),
+    diff = round(diff, 2)
+  ) %>%
+  arrange(fase, desc(xP))
+
+xp_faser
+
+# --------------------------------------------------
+# 9. BRØNDBY OPDELT
+# --------------------------------------------------
+brondby_faser <- xp_phase %>%
+  filter(team_name == "Brøndby") %>%
+  group_by(fase) %>%
+  summarise(
+    kampe = n(),
+    xP = round(sum(xP, na.rm = TRUE), 2),
+    point = sum(faktiske_point, na.rm = TRUE),
+    diff = round(sum(xP, na.rm = TRUE) - sum(faktiske_point, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+brondby_faser
+
+library(gt)
+library(dplyr)
+library(scales)
+
+brondby_faser %>%
+  gt() %>%
+  cols_label(
+    fase = "Fase",
+    kampe = "Kampe",
+    xP = "xP",
+    point = "Point",
+    diff = "Forskel"
+  ) %>%
+  fmt_number(
+    columns = c(xP, diff),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = -fase
+  ) %>%
+  tab_header(
+    title = "Brøndby IF – xP fordelt på faser",
+    subtitle = "Grundspil vs. mesterskabsspil"
+  ) %>%
+  data_color(
+    columns = diff,
+    colors = scales::col_numeric(
+      palette = c("#d73027", "#ffffbf", "#1a9850"),
+      domain = c(min(brondby_faser$diff), max(brondby_faser$diff))
+    )
+  )
