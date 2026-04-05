@@ -1,0 +1,2611 @@
+install.packages("ggsoccer")
+
+library(ggsoccer)
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(scales)
+library(stringr)
+library(tidyr)
+library(grid)
+
+# =========================================================
+# KRAV: passes_df og advanced_stats skal være loaded i environment
+# =========================================================
+if (!exists("passes_df")) {
+  stop("passes_df findes ikke i environment. Load datasættet før du kører appen.")
+}
+
+if (!exists("advanced_stats")) {
+  stop("advanced_stats findes ikke i environment. Load datasættet før du kører appen.")
+}
+
+# =========================================================
+# HJÆLPER: selectize med dropdown over alt andet
+# =========================================================
+smart_select <- function(inputId, label, choices, selected = NULL) {
+  selectizeInput(
+    inputId = inputId,
+    label = label,
+    choices = choices,
+    selected = selected,
+    options = list(
+      dropdownParent = "body",
+      closeAfterSelect = TRUE
+    )
+  )
+}
+
+nav_button <- function(id, label, active = FALSE) {
+  cls <- if (active) "nav-tab-btn active" else "nav-tab-btn"
+  actionButton(inputId = id, label = label, class = cls)
+}
+
+section_button <- function(id, label, active = FALSE) {
+  cls <- if (active) "section-btn active" else "section-btn"
+  actionButton(inputId = id, label = label, class = cls)
+}
+
+# =========================================================
+# 1. DATAKLARGØRING - AFLEVERINGER
+# =========================================================
+prepare_pass_data <- function(df) {
+  start_x <- if ("STARTLOCATIONX" %in% names(df)) {
+    as.numeric(df$STARTLOCATIONX)
+  } else if ("LOCATIONX" %in% names(df)) {
+    as.numeric(df$LOCATIONX)
+  } else {
+    rep(NA_real_, nrow(df))
+  }
+  
+  start_y <- if ("STARTLOCATIONY" %in% names(df)) {
+    as.numeric(df$STARTLOCATIONY)
+  } else if ("LOCATIONY" %in% names(df)) {
+    as.numeric(df$LOCATIONY)
+  } else {
+    rep(NA_real_, nrow(df))
+  }
+  
+  end_x <- if ("ENDLOCATIONX" %in% names(df)) {
+    as.numeric(df$ENDLOCATIONX)
+  } else {
+    rep(NA_real_, nrow(df))
+  }
+  
+  end_y <- if ("ENDLOCATIONY" %in% names(df)) {
+    as.numeric(df$ENDLOCATIONY)
+  } else {
+    rep(NA_real_, nrow(df))
+  }
+  
+  match_id <- if ("MATCH_WYID" %in% names(df)) {
+    as.character(df$MATCH_WYID)
+  } else if ("match_wyid" %in% names(df)) {
+    as.character(df$match_wyid)
+  } else if ("MATCHID" %in% names(df)) {
+    as.character(df$MATCHID)
+  } else if ("match_id" %in% names(df)) {
+    as.character(df$match_id)
+  } else {
+    as.character(seq_len(nrow(df)))
+  }
+  
+  match_label <- if ("MATCHLABEL" %in% names(df)) {
+    as.character(df$MATCHLABEL)
+  } else if ("match_label" %in% names(df)) {
+    as.character(df$match_label)
+  } else {
+    rep(NA_character_, nrow(df))
+  }
+  
+  match_date <- if ("DATEUTC" %in% names(df)) {
+    as.character(df$DATEUTC)
+  } else if ("MATCH_DATE" %in% names(df)) {
+    as.character(df$MATCH_DATE)
+  } else if ("match_date" %in% names(df)) {
+    as.character(df$match_date)
+  } else if ("date" %in% names(df)) {
+    as.character(df$date)
+  } else {
+    rep(NA_character_, nrow(df))
+  }
+  
+  if (all(is.na(match_label) | match_label == "")) {
+    match_label <- ifelse(
+      !is.na(match_date) & match_date != "",
+      paste("Kamp", match_id, "-", match_date),
+      paste("Kamp", match_id)
+    )
+  }
+  
+  df %>%
+    mutate(
+      start_x = start_x,
+      start_y = start_y,
+      ENDLOCATIONX = end_x,
+      ENDLOCATIONY = end_y,
+      LENGTH = as.numeric(LENGTH),
+      match_id = match_id,
+      match_label = match_label,
+      match_date = match_date,
+      successful_pass = if_else(
+        if_any(starts_with("SECONDARYTYPE"), ~ coalesce(as.character(.x), "") == "loss"),
+        0, 1
+      ),
+      progressive_flag = if_else(
+        if_any(starts_with("SECONDARYTYPE"), ~ coalesce(as.character(.x), "") == "progressive_pass"),
+        1, 0
+      ),
+      final_third_flag = if_else(
+        if_any(starts_with("SECONDARYTYPE"), ~ coalesce(as.character(.x), "") == "pass_to_final_third"),
+        1, 0
+      ),
+      forward_flag = if_else(
+        if_any(starts_with("SECONDARYTYPE"), ~ coalesce(as.character(.x), "") == "forward_pass"),
+        1, 0
+      )
+    ) %>%
+    filter(!is.na(team_name))
+}
+
+pass_data <- prepare_pass_data(passes_df)
+
+# =========================================================
+# 2. AGGREGERING - AFLEVERINGER
+# =========================================================
+make_team_summary <- function(df) {
+  df %>%
+    filter(!is.na(LENGTH)) %>%
+    group_by(team_name) %>%
+    summarise(
+      mean_length = mean(LENGTH, na.rm = TRUE),
+      success_rate = mean(successful_pass, na.rm = TRUE),
+      progressive_rate = mean(progressive_flag, na.rm = TRUE),
+      final_third_rate = mean(final_third_flag, na.rm = TRUE),
+      forward_rate = mean(forward_flag, na.rm = TRUE),
+      antal_afleveringer = n(),
+      .groups = "drop"
+    ) %>%
+    filter(if_all(c(mean_length, success_rate, progressive_rate, final_third_rate, forward_rate), is.finite))
+}
+
+make_player_summary <- function(df, team_selected = "Brøndby IF") {
+  base_df <- df %>%
+    filter(!is.na(passer_name), passer_wyid != 0) %>%
+    filter(!is.na(LENGTH))
+  
+  if (!identical(team_selected, "Alle")) {
+    base_df <- base_df %>% filter(team_name == team_selected)
+    
+    base_df %>%
+      group_by(passer_name) %>%
+      summarise(
+        mean_length = mean(LENGTH, na.rm = TRUE),
+        success_rate = mean(successful_pass, na.rm = TRUE),
+        progressive_rate = mean(progressive_flag, na.rm = TRUE),
+        final_third_rate = mean(final_third_flag, na.rm = TRUE),
+        forward_rate = mean(forward_flag, na.rm = TRUE),
+        antal_afleveringer = n(),
+        .groups = "drop"
+      ) %>%
+      filter(if_all(c(mean_length, success_rate, progressive_rate, final_third_rate, forward_rate), is.finite))
+  } else {
+    base_df %>%
+      group_by(team_name, passer_name) %>%
+      summarise(
+        mean_length = mean(LENGTH, na.rm = TRUE),
+        success_rate = mean(successful_pass, na.rm = TRUE),
+        progressive_rate = mean(progressive_flag, na.rm = TRUE),
+        final_third_rate = mean(final_third_flag, na.rm = TRUE),
+        forward_rate = mean(forward_flag, na.rm = TRUE),
+        antal_afleveringer = n(),
+        .groups = "drop"
+      ) %>%
+      filter(if_all(c(mean_length, success_rate, progressive_rate, final_third_rate, forward_rate), is.finite))
+  }
+}
+
+team_summary <- make_team_summary(pass_data)
+
+# =========================================================
+# 3. HJÆLPEFUNKTIONER - AFLEVERINGER
+# =========================================================
+run_cluster_model <- function(df, vars, k) {
+  feature_df <- df %>% select(all_of(vars))
+  n_distinct_points <- nrow(distinct(feature_df))
+  k_use <- min(k, max(1, n_distinct_points))
+  
+  if (k_use < 2) {
+    df$cluster <- factor(1)
+    return(list(data = df, centers = NULL, k_used = 1))
+  }
+  
+  scaled <- scale(feature_df)
+  set.seed(123)
+  km <- kmeans(scaled, centers = k_use, nstart = 25)
+  
+  out <- df
+  out$cluster <- factor(km$cluster)
+  
+  centers <- out %>%
+    group_by(cluster) %>%
+    summarise(across(all_of(vars), mean), .groups = "drop")
+  
+  list(data = out, centers = centers, k_used = k_use)
+}
+
+label_length_success_team <- function(df) {
+  centers <- df %>%
+    group_by(cluster) %>%
+    summarise(
+      mean_length = mean(mean_length),
+      success_rate = mean(success_rate),
+      .groups = "drop"
+    )
+  
+  if (nrow(centers) == 3) {
+    control_id <- centers %>% slice_min(mean_length, n = 1, with_ties = FALSE) %>% pull(cluster)
+    direct_id  <- centers %>% slice_max(mean_length, n = 1, with_ties = FALSE) %>% pull(cluster)
+    
+    df %>%
+      mutate(
+        cluster_name = case_when(
+          cluster == control_id ~ "Kontrollerende possessionshold",
+          cluster == direct_id ~ "Direkte og risikobaserede hold",
+          TRUE ~ "Balancerede hold"
+        )
+      )
+  } else {
+    ranked <- centers %>% arrange(mean_length)
+    map <- c(
+      "Kontrollerende possessionshold",
+      "Balancerede hold",
+      "Direkte hold",
+      "Meget direkte og risikobaserede hold"
+    )
+    label_map <- setNames(map[seq_len(nrow(ranked))], ranked$cluster)
+    
+    df %>% mutate(cluster_name = unname(label_map[as.character(cluster)]))
+  }
+}
+
+label_length_success_player <- function(df) {
+  centers <- df %>%
+    group_by(cluster) %>%
+    summarise(
+      mean_length = mean(mean_length),
+      success_rate = mean(success_rate),
+      .groups = "drop"
+    )
+  
+  if (nrow(centers) == 3) {
+    direct_id <- centers %>% slice_max(mean_length, n = 1, with_ties = FALSE) %>% pull(cluster)
+    remaining <- centers %>% filter(cluster != direct_id)
+    safe_id <- remaining %>% slice_max(success_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    
+    df %>%
+      mutate(
+        cluster_name = case_when(
+          cluster == safe_id ~ "Boldsikre opspilsspillere",
+          cluster == direct_id ~ "Direkte og risikobaserede spillere",
+          TRUE ~ "Korte kombinationsspillere"
+        )
+      )
+  } else {
+    ranked <- centers %>% arrange(mean_length)
+    map <- c(
+      "Korte kombinationsspillere",
+      "Boldsikre opspilsspillere",
+      "Balancerede boldfordelere",
+      "Direkte og risikobaserede spillere"
+    )
+    label_map <- setNames(map[seq_len(nrow(ranked))], ranked$cluster)
+    
+    df %>% mutate(cluster_name = unname(label_map[as.character(cluster)]))
+  }
+}
+
+label_progressive_success_team <- function(df) {
+  centers <- df %>%
+    group_by(cluster) %>%
+    summarise(
+      progressive_rate = mean(progressive_rate),
+      success_rate = mean(success_rate),
+      .groups = "drop"
+    )
+  
+  if (nrow(centers) == 3) {
+    control_id <- centers %>% slice_min(progressive_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    risky_id <- centers %>%
+      mutate(score = progressive_rate - success_rate) %>%
+      slice_max(score, n = 1, with_ties = FALSE) %>%
+      pull(cluster)
+    
+    df %>%
+      mutate(
+        cluster_name = case_when(
+          cluster == control_id ~ "Kontrollerende possessionshold",
+          cluster == risky_id ~ "Risikobaserede progressionshold",
+          TRUE ~ "Balancerede hold"
+        )
+      )
+  } else {
+    centers2 <- centers %>%
+      mutate(
+        play_score = progressive_rate + success_rate,
+        risky_score = progressive_rate - success_rate
+      )
+    
+    control_id <- centers2 %>% slice_min(progressive_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    risky_id   <- centers2 %>% slice_max(risky_score, n = 1, with_ties = FALSE) %>% pull(cluster)
+    effective_id <- centers2 %>%
+      filter(!cluster %in% c(control_id, risky_id)) %>%
+      slice_max(play_score, n = 1, with_ties = FALSE) %>%
+      pull(cluster)
+    
+    df %>%
+      mutate(
+        cluster_name = case_when(
+          cluster == control_id ~ "Kontrollerende possessionshold",
+          cluster == effective_id ~ "Effektive progressionshold",
+          cluster == risky_id ~ "Risikobaserede progressionshold",
+          TRUE ~ "Balancerede hold"
+        )
+      )
+  }
+}
+
+label_progressive_success_player <- function(df) {
+  centers <- df %>%
+    group_by(cluster) %>%
+    summarise(
+      progressive_rate = mean(progressive_rate),
+      success_rate = mean(success_rate),
+      .groups = "drop"
+    )
+  
+  if (nrow(centers) == 3) {
+    safe_id <- centers %>% slice_min(progressive_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    risky_id <- centers %>% slice_min(success_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    playmaker_id <- setdiff(centers$cluster, c(safe_id, risky_id))
+    
+    df %>%
+      mutate(
+        cluster_name = case_when(
+          cluster == safe_id ~ "Boldsikre opspilsspillere",
+          cluster == playmaker_id ~ "Effektive progressive playmakere",
+          TRUE ~ "Risikable boldprogressorer"
+        )
+      )
+  } else {
+    centers2 <- centers %>% mutate(play_score = progressive_rate + success_rate)
+    safe_id <- centers2 %>% slice_min(progressive_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    risky_id <- centers2 %>% slice_min(success_rate, n = 1, with_ties = FALSE) %>% pull(cluster)
+    playmaker_id <- centers2 %>%
+      filter(!cluster %in% c(safe_id, risky_id)) %>%
+      slice_max(play_score, n = 1, with_ties = FALSE) %>%
+      pull(cluster)
+    
+    df %>%
+      mutate(
+        cluster_name = case_when(
+          cluster == safe_id ~ "Boldsikre opspilsspillere",
+          cluster == playmaker_id ~ "Effektive progressive playmakere",
+          cluster == risky_id ~ "Risikable boldprogressorer",
+          TRUE ~ "Balancerede progressorer"
+        )
+      )
+  }
+}
+
+make_description_table <- function(df, x_var, y_var) {
+  df %>%
+    group_by(cluster_name) %>%
+    summarise(
+      `Antal observationer` = n(),
+      `Gns. x-variabel` = round(mean(.data[[x_var]], na.rm = TRUE), 3),
+      `Gns. y-variabel` = round(mean(.data[[y_var]], na.rm = TRUE), 3),
+      `Antal afleveringer` = round(mean(antal_afleveringer, na.rm = TRUE), 0),
+      .groups = "drop"
+    )
+}
+
+make_team_data_table <- function(df) {
+  df %>%
+    transmute(
+      Hold = team_name,
+      `Gns. afleveringslængde` = mean_length,
+      Succesrate = success_rate,
+      `Progressive rate` = progressive_rate,
+      `Final third rate` = final_third_rate,
+      `Forward rate` = forward_rate,
+      `Antal afleveringer` = antal_afleveringer
+    ) %>%
+    arrange(desc(`Antal afleveringer`))
+}
+
+make_player_data_table <- function(df, team_selected) {
+  player_df <- make_player_summary(df, team_selected)
+  
+  if (identical(team_selected, "Alle")) {
+    player_df %>%
+      transmute(
+        Hold = team_name,
+        Spiller = passer_name,
+        `Gns. afleveringslængde` = mean_length,
+        Succesrate = success_rate,
+        `Progressive rate` = progressive_rate,
+        `Final third rate` = final_third_rate,
+        `Forward rate` = forward_rate,
+        `Antal afleveringer` = antal_afleveringer
+      ) %>%
+      arrange(desc(`Antal afleveringer`))
+  } else {
+    player_df %>%
+      transmute(
+        Spiller = passer_name,
+        `Gns. afleveringslængde` = mean_length,
+        Succesrate = success_rate,
+        `Progressive rate` = progressive_rate,
+        `Final third rate` = final_third_rate,
+        `Forward rate` = forward_rate,
+        `Antal afleveringer` = antal_afleveringer
+      ) %>%
+      arrange(desc(`Antal afleveringer`))
+  }
+}
+
+make_pass_map_data <- function(df, team_selected, match_selected = "Alle", player_selected = "Alle", top_n = 40, min_passes = 3) {
+  out <- df %>%
+    filter(
+      team_name == team_selected,
+      !is.na(start_x),
+      !is.na(start_y),
+      !is.na(ENDLOCATIONX),
+      !is.na(ENDLOCATIONY),
+      !is.na(passer_name),
+      passer_wyid != 0
+    )
+  
+  if (!identical(match_selected, "Alle")) {
+    out <- out %>% filter(match_label == match_selected)
+  }
+  
+  if (!identical(player_selected, "Alle")) {
+    out <- out %>% filter(passer_name == player_selected)
+  }
+  
+  out %>%
+    mutate(
+      from_x = round(start_x / 10) * 10,
+      from_y = round(start_y / 10) * 10,
+      to_x   = round(ENDLOCATIONX / 10) * 10,
+      to_y   = round(ENDLOCATIONY / 10) * 10
+    ) %>%
+    group_by(passer_name, from_x, from_y, to_x, to_y) %>%
+    summarise(
+      antal_afleveringer = n(),
+      success_rate = mean(successful_pass, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(antal_afleveringer >= min_passes) %>%
+    arrange(desc(antal_afleveringer)) %>%
+    slice_head(n = top_n) %>%
+    mutate(
+      hover_text = paste0(
+        "Spiller: ", passer_name,
+        "<br>Fra: (", from_x, ", ", from_y, ")",
+        "<br>Til: (", to_x, ", ", to_y, ")",
+        "<br>Antal afleveringer: ", antal_afleveringer,
+        "<br>Succesrate: ", percent(success_rate, accuracy = 0.1)
+      )
+    )
+}
+
+make_heatmap_data <- function(df, team_selected, match_selected = "Alle", player_selected = "Alle", mode = "start") {
+  out <- df %>% filter(team_name == team_selected)
+  
+  if (!identical(match_selected, "Alle")) {
+    out <- out %>% filter(match_label == match_selected)
+  }
+  
+  if (!identical(player_selected, "Alle")) {
+    out <- out %>% filter(passer_name == player_selected)
+  }
+  
+  if (mode == "start") {
+    out %>%
+      filter(!is.na(start_x), !is.na(start_y)) %>%
+      transmute(x = start_x, y = start_y)
+  } else {
+    out %>%
+      filter(!is.na(ENDLOCATIONX), !is.na(ENDLOCATIONY)) %>%
+      transmute(x = ENDLOCATIONX, y = ENDLOCATIONY)
+  }
+}
+
+make_match_summary <- function(df, team_selected, match_selected, player_selected = "Alle") {
+  out <- df %>% filter(team_name == team_selected)
+  
+  if (!identical(match_selected, "Alle")) {
+    out <- out %>% filter(match_label == match_selected)
+  }
+  
+  if (!identical(player_selected, "Alle")) {
+    out <- out %>% filter(passer_name == player_selected)
+  }
+  
+  out %>%
+    summarise(
+      `Antal afleveringer` = n(),
+      Succesrate = mean(successful_pass, na.rm = TRUE),
+      `Gns. afleveringslængde` = mean(LENGTH, na.rm = TRUE),
+      `Progressive rate` = mean(progressive_flag, na.rm = TRUE),
+      `Final third rate` = mean(final_third_flag, na.rm = TRUE),
+      `Forward rate` = mean(forward_flag, na.rm = TRUE)
+    )
+}
+
+plot_pitch_heatmap <- function(df_plot, title_text) {
+  validate(
+    need(nrow(df_plot) > 0, "Ingen data matcher det valgte filter.")
+  )
+  
+  ggplot(df_plot, aes(x = x, y = y)) +
+    ggsoccer::annotate_pitch(dimensions = ggsoccer::pitch_opta, colour = "#cbd5e1") +
+    stat_bin_2d(bins = 12, aes(fill = after_stat(count)), alpha = 0.85) +
+    scale_fill_gradient(low = "#dbeafe", high = "#1d4ed8", guide = "none") +
+    coord_fixed(xlim = c(0, 100), ylim = c(0, 100), clip = "off") +
+    ggsoccer::theme_pitch() +
+    theme(
+      plot.background = element_rect(fill = "white", colour = NA),
+      panel.background = element_rect(fill = "white", colour = NA),
+      plot.title = element_text(size = 18, face = "bold", colour = "#1f2937"),
+      plot.margin = margin(10, 10, 10, 10)
+    ) +
+    labs(title = title_text)
+}
+
+nice_axis_label <- function(x) {
+  case_when(
+    x == "mean_length" ~ "Gennemsnitlig længde",
+    x == "success_rate" ~ "Succesrate",
+    x == "progressive_rate" ~ "Progressive rate",
+    x == "forward_rate" ~ "Forward rate",
+    x == "final_third_rate" ~ "Final third rate",
+    TRUE ~ x
+  )
+}
+
+make_hover_text <- function(df, entity = c("team", "player"), x_var, y_var) {
+  entity <- match.arg(entity)
+  name_col <- if (entity == "team") "team_name" else "passer_name"
+  label <- if (entity == "team") "Hold" else "Spiller"
+  x_lab <- nice_axis_label(x_var)
+  y_lab <- nice_axis_label(y_var)
+  
+  df %>%
+    mutate(
+      hover_text = paste0(
+        label, ": ", .data[[name_col]],
+        "<br>", x_lab, ": ", round(.data[[x_var]], 3),
+        "<br>", y_lab, ": ", round(.data[[y_var]], 3),
+        "<br>Antal afleveringer: ", antal_afleveringer
+      )
+    )
+}
+
+plot_cluster_scatter <- function(df, x_var, y_var, title, color_title) {
+  plot_ly(
+    data = df,
+    x = as.formula(paste0("~", x_var)),
+    y = as.formula(paste0("~", y_var)),
+    type = "scatter",
+    mode = "markers",
+    color = ~cluster_name,
+    text = ~hover_text,
+    hoverinfo = "text",
+    marker = list(size = 13, opacity = 0.9, line = list(width = 0))
+  ) %>%
+    config(
+      displaylogo = FALSE,
+      modeBarButtonsToRemove = c(
+        "zoom2d", "pan2d", "select2d", "lasso2d",
+        "zoomIn2d", "zoomOut2d", "autoScale2d",
+        "resetScale2d", "toggleSpikelines"
+      )
+    ) %>%
+    layout(
+      title = list(text = title, x = 0.02, xanchor = "left", font = list(size = 18)),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "#ffffff",
+      xaxis = list(title = nice_axis_label(x_var), gridcolor = "#e5e7eb", zeroline = FALSE),
+      yaxis = list(title = nice_axis_label(y_var), gridcolor = "#e5e7eb", zeroline = FALSE),
+      legend = list(title = list(text = color_title), orientation = "v", x = 1.01, y = 1),
+      margin = list(l = 70, r = 140, t = 70, b = 70)
+    )
+}
+
+# =========================================================
+# 4. HJÆLPEOBJEKTER - KAMPE
+# =========================================================
+cluster_navne <- data.frame(
+  cluster2 = c(1, 2, 3),
+  cluster_navn = c("Ufarlige kampe", "Balancerede kampe", "Dominerende kampe")
+)
+
+valg_variabler <- c(
+  "XGPERSHOT",
+  "XG",
+  "AVGDISTANCE",
+  "SHOTS",
+  "GOALS",
+  "SHOTSONTARGET",
+  "TOUCHESINBOX",
+  "PROGRESSIVERUNS",
+  "FOULS",
+  "FOULSSUFFERED",
+  "CORNERS",
+  "OFFSIDES",
+  "DRIBBLES"
+)
+
+variabel_forklaring <- list(
+  mean_length = "Gennemsnitlig afleveringslængde. Viser hvor lange afleveringer spilleren eller holdet typisk slår.",
+  success_rate = "Andel succesfulde afleveringer. En høj værdi betyder, at mange afleveringer finder en medspiller.",
+  progressive_rate = "Andel progressive afleveringer. Det vil sige afleveringer der flytter bolden markant fremad på banen.",
+  forward_rate = "Andel afleveringer der går fremad i banen.",
+  final_third_rate = "Andel afleveringer der ender i banens sidste tredjedel."
+)
+# =========================================================
+# 5. UI
+# =========================================================
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      body {
+        font-family: 'Segoe UI', Arial, sans-serif;
+        background: #eef3f8;
+        color: #1f2937;
+      }
+
+      .container-fluid {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .app-shell {
+        display: flex;
+        gap: 18px;
+        align-items: flex-start;
+        margin-top: 14px;
+      }
+
+      .left-menu {
+        width: 220px;
+        min-width: 220px;
+        background: linear-gradient(180deg, #0d1630 0%, #132447 100%);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+        position: sticky;
+        top: 14px;
+      }
+
+      .left-menu-title {
+        color: #ffffff;
+        font-size: 26px;
+        font-weight: 800;
+        margin-bottom: 4px;
+      }
+
+      .left-menu-subtitle {
+        color: rgba(255,255,255,0.72);
+        font-size: 13px;
+        margin-bottom: 18px;
+      }
+
+      .section-btn {
+        width: 100%;
+        margin-bottom: 12px !important;
+        background: rgba(255,255,255,0.08) !important;
+        color: #e5edf8 !important;
+        border: 1px solid rgba(255,255,255,0.10) !important;
+        border-radius: 12px !important;
+        padding: 14px 16px !important;
+        font-size: 15px !important;
+        font-weight: 700 !important;
+        text-align: left !important;
+        box-shadow: none !important;
+        outline: none !important;
+      }
+
+      .section-btn:hover {
+        background: rgba(255,255,255,0.14) !important;
+        color: #ffffff !important;
+      }
+
+      .section-btn.active {
+        background: #ffffff !important;
+        color: #0f172a !important;
+        box-shadow: 0 10px 22px rgba(2, 8, 23, 0.18) !important;
+      }
+
+      .section-btn:focus,
+      .section-btn:active,
+      .section-btn.focus,
+      .section-btn:focus:active {
+        outline: none !important;
+        box-shadow: none !important;
+      }
+
+      .content-area {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .top-shell {
+        background: linear-gradient(180deg, #0d1630 0%, #132447 100%);
+        border-radius: 18px;
+        padding: 18px 18px 16px 18px;
+        margin-bottom: 18px;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+      }
+
+      .top-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+
+      .brand-title {
+        color: #ffffff;
+        font-size: 34px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        margin: 0;
+      }
+
+      .brand-subtitle {
+        color: rgba(255,255,255,0.72);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+
+      .nav-tabs-wrap {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .nav-tab-btn {
+        background: rgba(255,255,255,0.08) !important;
+        color: #e5edf8 !important;
+        border: 1px solid rgba(255,255,255,0.10) !important;
+        border-radius: 12px !important;
+        padding: 12px 18px !important;
+        font-size: 15px !important;
+        font-weight: 700 !important;
+        min-width: 170px;
+        transition: all 0.18s ease;
+        box-shadow: none !important;
+        outline: none !important;
+      }
+
+      .nav-tab-btn:hover {
+        background: rgba(255,255,255,0.14) !important;
+        color: #ffffff !important;
+      }
+
+      .nav-tab-btn.active {
+        background: #ffffff !important;
+        color: #0f172a !important;
+        box-shadow: 0 10px 22px rgba(2, 8, 23, 0.18) !important;
+      }
+
+      .nav-tab-btn:focus,
+      .nav-tab-btn:active,
+      .nav-tab-btn.focus,
+      .nav-tab-btn:focus:active {
+        outline: none !important;
+        box-shadow: none !important;
+      }
+
+      .tab-content,
+      .tab-content > .tab-pane,
+      .row,
+      .col-sm-3,
+      .col-sm-4,
+      .col-sm-5,
+      .col-sm-6,
+      .col-sm-7,
+      .col-sm-8,
+      .col-sm-9,
+      .col-sm-12 {
+        overflow: visible !important;
+      }
+
+      .box-card {
+        background: #ffffff;
+        border: 1px solid #dde6f0;
+        border-radius: 18px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+        margin-bottom: 18px;
+        overflow: visible !important;
+        position: relative;
+        z-index: 1;
+      }
+
+      .filter-card {
+        z-index: 500 !important;
+      }
+
+      .box-card-header {
+        padding: 18px 20px;
+        border-bottom: 1px solid #edf2f7;
+        position: relative;
+      }
+
+      .box-card-header:before {
+        content: '';
+        display: block;
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 4px;
+        background: linear-gradient(90deg, #7c3aed 0%, #8b5cf6 100%);
+      }
+
+      .box-card-title {
+        font-size: 17px;
+        font-weight: 800;
+        color: #1f2937;
+        margin: 0;
+      }
+
+      .box-card-body {
+        padding: 22px 20px 28px 20px;
+        overflow: visible !important;
+        min-height: 150px;
+        position: relative;
+      }
+
+      .desc-box {
+        background: linear-gradient(135deg, #0f172a 0%, #0b2a57 100%);
+        border-radius: 16px;
+        padding: 20px 24px;
+        min-height: 158px;
+      }
+
+      .desc-box h4 {
+        color: #ffffff !important;
+        margin-top: 0;
+        margin-bottom: 12px;
+        font-weight: 800;
+      }
+
+      .desc-box p {
+        color: #e2e8f0;
+        margin-bottom: 8px;
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      .form-group {
+        margin-bottom: 26px !important;
+        position: relative;
+        z-index: 1000;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0 !important;
+      }
+
+      .form-group label {
+        font-weight: 700;
+        color: #334155;
+        margin-bottom: 10px;
+        font-size: 15px;
+        display: block;
+      }
+
+      .selectize-control {
+        position: relative !important;
+        z-index: 3000 !important;
+        margin-bottom: 20px;
+      }
+
+      .selectize-control:last-child {
+        margin-bottom: 0;
+      }
+
+      .selectize-input,
+      .form-control {
+        border-radius: 16px !important;
+        border: 1px solid #cbd5e1 !important;
+        min-height: 56px !important;
+        box-shadow: none !important;
+        padding: 14px 16px !important;
+        font-size: 16px !important;
+        line-height: 1.4 !important;
+      }
+
+      .selectize-input.focus {
+        border-color: #7c3aed !important;
+        box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.10) !important;
+      }
+
+      .selectize-dropdown,
+      .selectize-dropdown.form-control {
+        z-index: 99999 !important;
+        border-radius: 0 0 16px 16px !important;
+        border: 1px solid #cbd5e1 !important;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.14) !important;
+        max-height: 260px !important;
+        overflow-y: auto !important;
+      }
+
+      .selectize-dropdown-content {
+        max-height: 240px !important;
+        overflow-y: auto !important;
+      }
+
+      .selectize-dropdown .option,
+      .selectize-dropdown .active {
+        padding: 14px 16px !important;
+        font-size: 16px !important;
+        line-height: 1.45 !important;
+      }
+
+      .helper-text {
+        color: #475569;
+        line-height: 1.65;
+        font-size: 15px;
+        margin-bottom: 0;
+      }
+
+      .kpi-card {
+        border-radius: 18px;
+        padding: 20px 22px;
+        color: white;
+        min-height: 132px;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+        margin-bottom: 18px;
+      }
+
+      .kpi-purple { background: linear-gradient(135deg, #6d28d9 0%, #8b5cf6 100%); }
+      .kpi-green  { background: linear-gradient(135deg, #059669 0%, #10b981 100%); }
+      .kpi-blue   { background: linear-gradient(135deg, #1d4ed8 0%, #38bdf8 100%); }
+      .kpi-orange { background: linear-gradient(135deg, #d97706 0%, #f59e0b 100%); }
+
+      .kpi-value {
+        font-size: 40px;
+        font-weight: 800;
+        line-height: 1;
+        margin-bottom: 10px;
+      }
+
+      .kpi-label {
+        font-size: 16px;
+        font-weight: 600;
+        color: rgba(255,255,255,0.95);
+      }
+
+      .dataTables_wrapper .dataTables_filter input,
+      .dataTables_wrapper .dataTables_length select {
+        border: 1px solid #d7e0ea !important;
+        border-radius: 10px !important;
+        padding: 6px 10px !important;
+        background: #ffffff !important;
+      }
+
+      table.dataTable thead th {
+        background: #f8fafc !important;
+        color: #1f2937 !important;
+        font-weight: 800 !important;
+        border-bottom: 1px solid #e5e7eb !important;
+      }
+
+      table.dataTable tbody td {
+        color: #334155 !important;
+        border-bottom: 1px solid #eef2f7 !important;
+      }
+
+      .dt-nowrap {
+        width: 100%;
+        overflow-x: auto;
+      }
+
+      .dataTables_wrapper {
+        width: 100%;
+      }
+
+      .dataTables_scrollHeadInner,
+      .dataTables_scrollHeadInner table,
+      .dataTables_scrollBody table {
+        width: 100% !important;
+      }
+
+      .js-plotly-plot .plotly .modebar {
+        top: 10px !important;
+        right: 10px !important;
+        background: rgba(255,255,255,0.78) !important;
+        border-radius: 10px !important;
+      }
+
+      .tab-content > .tab-pane {
+        padding-top: 0;
+      }
+
+      @media (max-width: 1200px) {
+        .nav-tab-btn {
+          min-width: 150px;
+          font-size: 14px;
+        }
+      }
+
+      @media (max-width: 991px) {
+        .app-shell {
+          flex-direction: column;
+        }
+
+        .left-menu {
+          width: 100%;
+          min-width: unset;
+          position: relative;
+          top: 0;
+        }
+      }
+
+      @media (max-width: 767px) {
+        .brand-title {
+          font-size: 28px;
+        }
+
+        .nav-tabs-wrap {
+          gap: 10px;
+        }
+
+        .nav-tab-btn {
+          width: 100%;
+          min-width: unset;
+        }
+
+        .box-card-body {
+          min-height: 170px;
+        }
+      }
+    ")),
+    tags$script(HTML("
+      Shiny.addCustomMessageHandler('activateNav', function(msg) {
+        document.querySelectorAll('.nav-tab-btn').forEach(function(el) {
+          el.classList.remove('active');
+        });
+        var activeEl = document.getElementById(msg.id);
+        if (activeEl) activeEl.classList.add('active');
+      });
+
+      Shiny.addCustomMessageHandler('activateSectionNav', function(msg) {
+        document.querySelectorAll('.section-btn').forEach(function(el) {
+          el.classList.remove('active');
+        });
+        var activeEl = document.getElementById(msg.id);
+        if (activeEl) activeEl.classList.add('active');
+      });
+    "))
+  ),
+  
+  div(
+    class = "app-shell",
+    
+    div(
+      class = "left-menu",
+      div(class = "left-menu-title", "Menu"),
+      div(class = "left-menu-subtitle", "Vælg analysetype"),
+      section_button("section_afleveringer", "Afleveringer", active = TRUE),
+      section_button("section_kampe", "Kampe")
+    ),
+    
+    div(
+      class = "content-area",
+      
+      tabsetPanel(
+        id = "section_tabs",
+        type = "hidden",
+        
+        tabPanel(
+          title = "afleveringer",
+          
+          div(
+            class = "top-shell",
+            div(
+              class = "top-header",
+              div(
+                tags$div(class = "brand-title", "Brøndby IF"),
+                tags$div(class = "brand-subtitle", "Afleveringsdashboard")
+              )
+            ),
+            div(
+              class = "nav-tabs-wrap",
+              nav_button("nav_model1", "Model 1 – Hold", active = TRUE),
+              nav_button("nav_model2", "Model 2 – Brøndby"),
+              nav_button("nav_model3", "Model 3 – Hold"),
+              nav_button("nav_model4", "Model 4 – Brøndby"),
+              nav_button("nav_bdash", "Brøndby-dashboard"),
+              nav_button("nav_hdash", "Hold-dashboard"),
+              nav_button("nav_teamtable", "Hold-tal"),
+              nav_button("nav_playertable", "Spiller-tal"),
+              nav_button("nav_pitch", "Pass map"),
+              nav_button("nav_heatmap", "Heatmap"),
+              nav_button("nav_compare", "Kamp-sammenligning")
+            )
+          ),
+          
+          tabsetPanel(
+            id = "main_tabs",
+            type = "hidden",
+            
+            tabPanel(
+              title = "model1_hold",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Indstillinger")),
+                    div(
+                      class = "box-card-body",
+                      smart_select("k_m1", "Antal clusters", choices = c(3, 4), selected = 3),
+                      tags$p(
+                        class = "helper-text",
+                        "Model 1 viser Superliga holdene ud fra gennemsnitlig afleveringslængde og succesrate."
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusterbeskrivelser")),
+                    div(class = "box-card-body", uiOutput("desc_m1"))
+                  )
+                )
+              ),
+              fluidRow(
+                column(
+                  width = 7,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Visualisering")),
+                    div(class = "box-card-body", plotlyOutput("plot_m1", height = 520))
+                  )
+                ),
+                column(
+                  width = 5,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusteroversigt")),
+                    div(class = "box-card-body dt-nowrap", div(style = "width:100%; overflow-x:auto;", DTOutput("table_m1")))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "model2_brondby",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Indstillinger")),
+                    div(
+                      class = "box-card-body",
+                      smart_select("k_m2", "Antal clusters", choices = c(3, 4), selected = 3),
+                      tags$p(
+                        class = "helper-text",
+                        "Model 2 viser Brøndby-spillernes afleveringsprofiler ud fra gennemsnitlig længde og succesrate."
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusterbeskrivelser")),
+                    div(class = "box-card-body", uiOutput("desc_m2"))
+                  )
+                )
+              ),
+              fluidRow(
+                column(
+                  width = 7,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Visualisering")),
+                    div(class = "box-card-body", plotlyOutput("plot_m2", height = 520))
+                  )
+                ),
+                column(
+                  width = 5,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusteroversigt")),
+                    div(class = "box-card-body dt-nowrap", div(style = "width:100%; overflow-x:auto;", DTOutput("table_m2")))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "model3_hold",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Indstillinger")),
+                    div(
+                      class = "box-card-body",
+                      smart_select("k_m3", "Antal clusters", choices = c(3, 4), selected = 3),
+                      tags$p(
+                        class = "helper-text",
+                        "Model 3 viser holdenes balance mellem progressivitet og boldsikkerhed."
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusterbeskrivelser")),
+                    div(class = "box-card-body", uiOutput("desc_m3"))
+                  )
+                )
+              ),
+              fluidRow(
+                column(
+                  width = 7,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Visualisering")),
+                    div(class = "box-card-body", plotlyOutput("plot_m3", height = 520))
+                  )
+                ),
+                column(
+                  width = 5,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusteroversigt")),
+                    div(class = "box-card-body dt-nowrap", div(style = "width:100%; overflow-x:auto;", DTOutput("table_m3")))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "model4_brondby",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Indstillinger")),
+                    div(
+                      class = "box-card-body",
+                      smart_select("k_m4", "Antal clusters", choices = c(3, 4), selected = 3),
+                      tags$p(
+                        class = "helper-text",
+                        "Model 4 viser Brøndby-spillernes balance mellem progressive afleveringer og succesrate."
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusterbeskrivelser")),
+                    div(class = "box-card-body", uiOutput("desc_m4"))
+                  )
+                )
+              ),
+              fluidRow(
+                column(
+                  width = 7,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Visualisering")),
+                    div(class = "box-card-body", plotlyOutput("plot_m4", height = 520))
+                  )
+                ),
+                column(
+                  width = 5,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Clusteroversigt")),
+                    div(class = "box-card-body dt-nowrap", div(style = "width:100%; overflow-x:auto;", DTOutput("table_m4")))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "brondby_dash",
+              fluidRow(
+                column(3, uiOutput("b_total_card")),
+                column(3, uiOutput("b_success_card")),
+                column(3, uiOutput("b_prog_card")),
+                column(3, uiOutput("b_len_card"))
+              ),
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Visning")),
+                    div(
+                      class = "box-card-body",
+                      smart_select(
+                        "b_x", "X-akse",
+                        choices = c("mean_length", "success_rate", "progressive_rate", "forward_rate", "final_third_rate"),
+                        selected = "progressive_rate"
+                      ),
+                      uiOutput("b_x_forklaring"),
+                      smart_select(
+                        "b_y", "Y-akse",
+                        choices = c("success_rate", "mean_length", "progressive_rate", "forward_rate", "final_third_rate"),
+                        selected = "success_rate"
+                      ),
+                      uiOutput("b_y_forklaring")
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Brøndby IF – spillerdashboard")),
+                    div(class = "box-card-body", plotlyOutput("b_plot", height = 520))
+                  )
+                )
+              ),
+              fluidRow(
+                column(
+                  width = 12,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Brøndby-spillere – nøgletal")),
+                    div(class = "box-card-body dt-nowrap", DTOutput("b_table"))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "hold_dash",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Holdvalg")),
+                    div(
+                      class = "box-card-body",
+                      smart_select(
+                        "team_pick", "Vælg hold",
+                        choices = sort(unique(team_summary$team_name)),
+                        selected = "Brøndby IF"
+                      ),
+                      smart_select(
+                        "h_x", "X-akse",
+                        choices = c("mean_length", "success_rate", "progressive_rate", "forward_rate", "final_third_rate"),
+                        selected = "mean_length"
+                      ),
+                      uiOutput("h_x_forklaring"),
+                      smart_select(
+                        "h_y", "Y-akse",
+                        choices = c("success_rate", "mean_length", "progressive_rate", "forward_rate", "final_third_rate"),
+                        selected = "success_rate"
+                      ),
+                      uiOutput("h_y_forklaring")
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Valgt hold – spillerdashboard")),
+                    div(class = "box-card-body", plotlyOutput("h_plot", height = 520))
+                  )
+                )
+              ),
+              fluidRow(
+                column(3, uiOutput("h_total_card")),
+                column(3, uiOutput("h_success_card")),
+                column(3, uiOutput("h_prog_card")),
+                column(3, uiOutput("h_len_card"))
+              ),
+              fluidRow(
+                column(
+                  width = 12,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Valgt hold – spillere")),
+                    div(class = "box-card-body dt-nowrap", DTOutput("h_table"))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "hold_tal",
+              fluidRow(
+                column(
+                  width = 12,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Hold – sammenligningstabel")),
+                    div(class = "box-card-body dt-nowrap", DTOutput("team_data_table"))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "spiller_tal",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Filtre")),
+                    div(
+                      class = "box-card-body",
+                      smart_select(
+                        "player_table_team", "Vælg hold",
+                        choices = c("Alle", sort(unique(team_summary$team_name))),
+                        selected = "Alle"
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Spillere – sammenligningstabel")),
+                    div(class = "box-card-body dt-nowrap", DTOutput("player_data_table"))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "pass_map",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Filtre")),
+                    div(
+                      class = "box-card-body",
+                      smart_select(
+                        "pitch_team", "Vælg hold",
+                        choices = sort(unique(team_summary$team_name)),
+                        selected = "Brøndby IF"
+                      ),
+                      uiOutput("pitch_match_ui"),
+                      uiOutput("pitch_player_ui"),
+                      sliderInput("pitch_top_n", "Vis top afleveringsmønstre", min = 10, max = 100, value = 40, step = 5),
+                      sliderInput("pitch_min_passes", "Minimum antal afleveringer pr. mønster", min = 1, max = 10, value = 3, step = 1)
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Pass map – fra og til på banen")),
+                    div(class = "box-card-body", plotlyOutput("pitch_plot", height = 650))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "heatmap_tab",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Filtre")),
+                    div(
+                      class = "box-card-body",
+                      smart_select(
+                        "heat_team", "Vælg hold",
+                        choices = sort(unique(team_summary$team_name)),
+                        selected = "Brøndby IF"
+                      ),
+                      uiOutput("heat_match_ui"),
+                      uiOutput("heat_player_ui"),
+                      smart_select(
+                        "heat_mode", "Heatmap-type",
+                        choices = c("Startlokationer" = "start", "Slutlokationer" = "end"),
+                        selected = "start"
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  div(
+                    class = "box-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Heatmap – afleveringszoner")),
+                    div(class = "box-card-body", plotOutput("heat_plot", height = 650))
+                  )
+                )
+              )
+            ),
+            
+            tabPanel(
+              title = "compare_tab",
+              fluidRow(
+                column(
+                  width = 3,
+                  div(
+                    class = "box-card filter-card",
+                    div(class = "box-card-header", h3(class = "box-card-title", "Kamp-sammenligning")),
+                    div(
+                      class = "box-card-body",
+                      smart_select(
+                        "cmp_team", "Vælg hold",
+                        choices = sort(unique(team_summary$team_name)),
+                        selected = "Brøndby IF"
+                      ),
+                      uiOutput("cmp_player_ui"),
+                      uiOutput("cmp_match1_ui"),
+                      uiOutput("cmp_match2_ui"),
+                      smart_select(
+                        "cmp_heat_mode", "Visning",
+                        choices = c("Startlokationer" = "start", "Slutlokationer" = "end"),
+                        selected = "start"
+                      )
+                    )
+                  )
+                ),
+                column(
+                  width = 9,
+                  fluidRow(
+                    column(
+                      width = 6,
+                      div(
+                        class = "box-card",
+                        div(class = "box-card-header", h3(class = "box-card-title", "Kamp 1")),
+                        div(class = "box-card-body", plotOutput("cmp_plot1", height = 420))
+                      )
+                    ),
+                    column(
+                      width = 6,
+                      div(
+                        class = "box-card",
+                        div(class = "box-card-header", h3(class = "box-card-title", "Kamp 2")),
+                        div(class = "box-card-body", plotOutput("cmp_plot2", height = 420))
+                      )
+                    )
+                  ),
+                  fluidRow(
+                    column(
+                      width = 6,
+                      div(
+                        class = "box-card",
+                        div(class = "box-card-header", h3(class = "box-card-title", "Nøgletal – kamp 1")),
+                        div(class = "box-card-body dt-nowrap", DTOutput("cmp_table1"))
+                      )
+                    ),
+                    column(
+                      width = 6,
+                      div(
+                        class = "box-card",
+                        div(class = "box-card-header", h3(class = "box-card-title", "Nøgletal – kamp 2")),
+                        div(class = "box-card-body dt-nowrap", DTOutput("cmp_table2"))
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        ),
+        
+        tabPanel(
+          title = "kampe",
+          fluidRow(
+            column(
+              width = 3,
+              div(
+                class = "box-card filter-card",
+                div(class = "box-card-header", h3(class = "box-card-title", "Indstillinger")),
+                div(
+                  class = "box-card-body",
+                  smart_select("xvar", "Vælg X-akse:", choices = valg_variabler, selected = "XGPERSHOT"),
+                  smart_select("yvar", "Vælg Y-akse:", choices = valg_variabler, selected = "XG"),
+                  tags$p(
+                    class = "helper-text",
+                    "Denne fane viser clustering af kampe ud fra de valgte kampvariabler."
+                  )
+                )
+              )
+            ),
+            column(
+              width = 9,
+              div(
+                class = "box-card",
+                div(class = "box-card-header", h3(class = "box-card-title", "Clustering af kampe")),
+                div(class = "box-card-body", plotlyOutput("cluster_plot", height = 600))
+              )
+            )
+          ),
+          fluidRow(
+            column(
+              width = 12,
+              div(
+                class = "box-card",
+                div(class = "box-card-header", h3(class = "box-card-title", "Cluster summary")),
+                div(class = "box-card-body", tableOutput("cluster_summary_tabel"))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+# =========================================================
+# 6. SERVER
+# =========================================================
+server <- function(input, output, session) {
+  
+  # ---------------------------------------------------------
+  # OVERORDNET VENSTREMENU
+  # ---------------------------------------------------------
+  current_section <- reactiveVal("afleveringer")
+  
+  observeEvent(input$section_afleveringer, {
+    current_section("afleveringer")
+    updateTabsetPanel(session, "section_tabs", selected = "afleveringer")
+  })
+  
+  observeEvent(input$section_kampe, {
+    current_section("kampe")
+    updateTabsetPanel(session, "section_tabs", selected = "kampe")
+  })
+  
+  observe({
+    section_id <- if (current_section() == "afleveringer") "section_afleveringer" else "section_kampe"
+    session$sendCustomMessage("activateSectionNav", list(id = section_id))
+  })
+  
+  # ===============================
+  # FORKLARINGSBOKSE
+  # ===============================
+  
+  output$b_x_forklaring <- renderUI({
+    req(input$b_x)
+    div(
+      style = "
+        background-color:#f8fafc;
+        padding:10px;
+        border-radius:10px;
+        font-size:13px;
+        margin-top:-10px;
+        margin-bottom:16px;
+        color:#334155;
+        border:1px solid #e2e8f0;
+      ",
+      strong("Forklaring: "),
+      variabel_forklaring[[input$b_x]]
+    )
+  })
+  
+  output$b_y_forklaring <- renderUI({
+    req(input$b_y)
+    div(
+      style = "
+        background-color:#f8fafc;
+        padding:10px;
+        border-radius:10px;
+        font-size:13px;
+        margin-top:-10px;
+        margin-bottom:16px;
+        color:#334155;
+        border:1px solid #e2e8f0;
+      ",
+      strong("Forklaring: "),
+      variabel_forklaring[[input$b_y]]
+    )
+  })
+  
+  output$h_x_forklaring <- renderUI({
+    req(input$h_x)
+    div(
+      style = "
+        background-color:#f8fafc;
+        padding:10px;
+        border-radius:10px;
+        font-size:13px;
+        margin-top:-10px;
+        margin-bottom:16px;
+        color:#334155;
+        border:1px solid #e2e8f0;
+      ",
+      strong("Forklaring: "),
+      variabel_forklaring[[input$h_x]]
+    )
+  })
+  
+  output$h_y_forklaring <- renderUI({
+    req(input$h_y)
+    div(
+      style = "
+        background-color:#f8fafc;
+        padding:10px;
+        border-radius:10px;
+        font-size:13px;
+        margin-top:-10px;
+        margin-bottom:16px;
+        color:#334155;
+        border:1px solid #e2e8f0;
+      ",
+      strong("Forklaring: "),
+      variabel_forklaring[[input$h_y]]
+    )
+  })
+  
+  # ---------------------------------------------------------
+  # AFLEVERINGSAPPENS INTERNE NAVIGATION
+  # ---------------------------------------------------------
+  current_tab <- reactiveVal("model1_hold")
+  
+  observeEvent(input$nav_model1, {
+    current_tab("model1_hold")
+    updateTabsetPanel(session, "main_tabs", selected = "model1_hold")
+  })
+  
+  observeEvent(input$nav_model2, {
+    current_tab("model2_brondby")
+    updateTabsetPanel(session, "main_tabs", selected = "model2_brondby")
+  })
+  
+  observeEvent(input$nav_model3, {
+    current_tab("model3_hold")
+    updateTabsetPanel(session, "main_tabs", selected = "model3_hold")
+  })
+  
+  observeEvent(input$nav_model4, {
+    current_tab("model4_brondby")
+    updateTabsetPanel(session, "main_tabs", selected = "model4_brondby")
+  })
+  
+  observeEvent(input$nav_bdash, {
+    current_tab("brondby_dash")
+    updateTabsetPanel(session, "main_tabs", selected = "brondby_dash")
+  })
+  
+  observeEvent(input$nav_hdash, {
+    current_tab("hold_dash")
+    updateTabsetPanel(session, "main_tabs", selected = "hold_dash")
+  })
+  
+  observeEvent(input$nav_teamtable, {
+    current_tab("hold_tal")
+    updateTabsetPanel(session, "main_tabs", selected = "hold_tal")
+  })
+  
+  observeEvent(input$nav_playertable, {
+    current_tab("spiller_tal")
+    updateTabsetPanel(session, "main_tabs", selected = "spiller_tal")
+  })
+  
+  observeEvent(input$nav_pitch, {
+    current_tab("pass_map")
+    updateTabsetPanel(session, "main_tabs", selected = "pass_map")
+  })
+  
+  observeEvent(input$nav_heatmap, {
+    current_tab("heatmap_tab")
+    updateTabsetPanel(session, "main_tabs", selected = "heatmap_tab")
+  })
+  
+  observeEvent(input$nav_compare, {
+    current_tab("compare_tab")
+    updateTabsetPanel(session, "main_tabs", selected = "compare_tab")
+  })
+  
+  observe({
+    active_id <- case_when(
+      current_tab() == "model1_hold" ~ "nav_model1",
+      current_tab() == "model2_brondby" ~ "nav_model2",
+      current_tab() == "model3_hold" ~ "nav_model3",
+      current_tab() == "model4_brondby" ~ "nav_model4",
+      current_tab() == "brondby_dash" ~ "nav_bdash",
+      current_tab() == "hold_dash" ~ "nav_hdash",
+      current_tab() == "hold_tal" ~ "nav_teamtable",
+      current_tab() == "spiller_tal" ~ "nav_playertable",
+      current_tab() == "pass_map" ~ "nav_pitch",
+      current_tab() == "heatmap_tab" ~ "nav_heatmap",
+      TRUE ~ "nav_compare"
+    )
+    session$sendCustomMessage("activateNav", list(id = active_id))
+  })
+  
+  # ---------------------------------------------------------
+  # Dynamiske valg til kamp- og spillerfiltre - AFLEVERINGER
+  # ---------------------------------------------------------
+  matches_for_team <- reactive({
+    req(input$pitch_team)
+    pass_data %>%
+      filter(team_name == input$pitch_team) %>%
+      distinct(match_label) %>%
+      arrange(match_label) %>%
+      pull(match_label)
+  })
+  
+  output$pitch_match_ui <- renderUI({
+    smart_select(
+      "pitch_match", "Vælg kamp",
+      choices = c("Alle", matches_for_team()),
+      selected = "Alle"
+    )
+  })
+  
+  output$pitch_player_ui <- renderUI({
+    req(input$pitch_team)
+    players <- pass_data %>%
+      filter(team_name == input$pitch_team, !is.na(passer_name), passer_wyid != 0) %>%
+      distinct(passer_name) %>%
+      arrange(passer_name) %>%
+      pull(passer_name)
+    
+    smart_select(
+      "pitch_player", "Vælg spiller",
+      choices = c("Alle", players),
+      selected = "Alle"
+    )
+  })
+  
+  output$heat_match_ui <- renderUI({
+    req(input$heat_team)
+    matches <- pass_data %>%
+      filter(team_name == input$heat_team) %>%
+      distinct(match_label) %>%
+      arrange(match_label) %>%
+      pull(match_label)
+    
+    smart_select(
+      "heat_match", "Vælg kamp",
+      choices = c("Alle", matches),
+      selected = "Alle"
+    )
+  })
+  
+  output$heat_player_ui <- renderUI({
+    req(input$heat_team)
+    players <- pass_data %>%
+      filter(team_name == input$heat_team, !is.na(passer_name), passer_wyid != 0) %>%
+      distinct(passer_name) %>%
+      arrange(passer_name) %>%
+      pull(passer_name)
+    
+    smart_select(
+      "heat_player", "Vælg spiller",
+      choices = c("Alle", players),
+      selected = "Alle"
+    )
+  })
+  
+  output$cmp_player_ui <- renderUI({
+    req(input$cmp_team)
+    players <- pass_data %>%
+      filter(team_name == input$cmp_team, !is.na(passer_name), passer_wyid != 0) %>%
+      distinct(passer_name) %>%
+      arrange(passer_name) %>%
+      pull(passer_name)
+    
+    smart_select(
+      "cmp_player", "Vælg spiller",
+      choices = c("Alle", players),
+      selected = "Alle"
+    )
+  })
+  
+  output$cmp_match1_ui <- renderUI({
+    req(input$cmp_team)
+    matches <- pass_data %>%
+      filter(team_name == input$cmp_team) %>%
+      distinct(match_label) %>%
+      arrange(match_label) %>%
+      pull(match_label)
+    
+    smart_select(
+      "cmp_match1", "Vælg kamp 1",
+      choices = matches,
+      selected = if (length(matches) >= 1) matches[1] else NULL
+    )
+  })
+  
+  output$cmp_match2_ui <- renderUI({
+    req(input$cmp_team)
+    matches <- pass_data %>%
+      filter(team_name == input$cmp_team) %>%
+      distinct(match_label) %>%
+      arrange(match_label) %>%
+      pull(match_label)
+    
+    selected_default <- if (length(matches) >= 2) matches[2] else if (length(matches) >= 1) matches[1] else NULL
+    
+    smart_select(
+      "cmp_match2", "Vælg kamp 2",
+      choices = matches,
+      selected = selected_default
+    )
+  })
+  
+  # ---------------- Model 1 ----------------
+  model1_data <- reactive({
+    clustered <- run_cluster_model(team_summary, c("mean_length", "success_rate"), as.numeric(input$k_m1))
+    label_length_success_team(clustered$data) %>%
+      make_hover_text(entity = "team", x_var = "mean_length", y_var = "success_rate")
+  })
+  
+  output$plot_m1 <- renderPlotly({
+    plot_cluster_scatter(
+      model1_data(),
+      "mean_length",
+      "success_rate",
+      "Model 1 – Superliga-hold: afleveringslængde og succesrate",
+      "Holdtype"
+    )
+  })
+  
+  output$table_m1 <- renderDT({
+    datatable(
+      make_description_table(model1_data(), "mean_length", "success_rate"),
+      options = list(
+        dom = "t",
+        pageLength = 10,
+        autoWidth = FALSE,
+        scrollX = TRUE,
+        columnDefs = list(
+          list(width = "42%", targets = 0),
+          list(className = "dt-center", targets = c(1, 2, 3))
+        )
+      ),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = c("Gns. x-variabel", "Gns. y-variabel"), digits = 3) %>%
+      formatRound(columns = "Antal afleveringer", digits = 0)
+  })
+  
+  output$desc_m1 <- renderUI({
+    tags$div(
+      class = "desc-box",
+      tags$h4("Tolkning"),
+      tags$p("Kontrollerende possessionshold spiller kortere og mere sikre afleveringer."),
+      tags$p("Balancerede hold kombinerer kontrol og fremdrift."),
+      tags$p("Direkte og risikobaserede hold spiller længere afleveringer med lavere succesrate.")
+    )
+  })
+  
+  # ---------------- Model 2 ----------------
+  brondby_players <- reactive({
+    make_player_summary(pass_data, "Brøndby IF")
+  })
+  
+  model2_data <- reactive({
+    clustered <- run_cluster_model(brondby_players(), c("mean_length", "success_rate"), as.numeric(input$k_m2))
+    label_length_success_player(clustered$data) %>%
+      make_hover_text(entity = "player", x_var = "mean_length", y_var = "success_rate")
+  })
+  
+  output$plot_m2 <- renderPlotly({
+    plot_cluster_scatter(
+      model2_data(),
+      "mean_length",
+      "success_rate",
+      "Model 2 – Brøndby-spillere: afleveringslængde og succesrate",
+      "Spillertype"
+    )
+  })
+  
+  output$table_m2 <- renderDT({
+    datatable(
+      make_description_table(model2_data(), "mean_length", "success_rate"),
+      options = list(
+        dom = "t",
+        pageLength = 10,
+        autoWidth = FALSE,
+        scrollX = TRUE,
+        columnDefs = list(
+          list(width = "42%", targets = 0),
+          list(className = "dt-center", targets = c(1, 2, 3))
+        )
+      ),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = c("Gns. x-variabel", "Gns. y-variabel"), digits = 3) %>%
+      formatRound(columns = "Antal afleveringer", digits = 0)
+  })
+  
+  output$desc_m2 <- renderUI({
+    tags$div(
+      class = "desc-box",
+      tags$h4("Tolkning"),
+      tags$p("Boldsikre opspilsspillere skaber stabilitet i pasningsspillet."),
+      tags$p("Korte kombinationsspillere indgår i korte relationelle mønstre."),
+      tags$p("Direkte og risikobaserede spillere søger længere afleveringer med højere risiko.")
+    )
+  })
+  
+  # ---------------- Model 3 ----------------
+  model3_data <- reactive({
+    clustered <- run_cluster_model(team_summary, c("progressive_rate", "success_rate"), as.numeric(input$k_m3))
+    label_progressive_success_team(clustered$data) %>%
+      make_hover_text(entity = "team", x_var = "progressive_rate", y_var = "success_rate")
+  })
+  
+  output$plot_m3 <- renderPlotly({
+    plot_cluster_scatter(
+      model3_data(),
+      "progressive_rate",
+      "success_rate",
+      "Model 3 – Superliga-hold: progressive afleveringer og succesrate",
+      "Holdtype"
+    )
+  })
+  
+  output$table_m3 <- renderDT({
+    datatable(
+      make_description_table(model3_data(), "progressive_rate", "success_rate"),
+      options = list(
+        dom = "t",
+        pageLength = 10,
+        autoWidth = FALSE,
+        scrollX = TRUE,
+        columnDefs = list(
+          list(width = "42%", targets = 0),
+          list(className = "dt-center", targets = c(1, 2, 3))
+        )
+      ),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = c("Gns. x-variabel", "Gns. y-variabel"), digits = 3) %>%
+      formatRound(columns = "Antal afleveringer", digits = 0)
+  })
+  
+  output$desc_m3 <- renderUI({
+    tags$div(
+      class = "desc-box",
+      tags$h4("Tolkning"),
+      tags$p("Kontrollerende possessionshold har lavere andel progressive afleveringer, men høj succesrate."),
+      tags$p("Balancerede hold kombinerer fremdrift og stabilitet."),
+      tags$p("Risikobaserede progressionshold spiller mere fremadrettet, men med lavere præcision.")
+    )
+  })
+  
+  # ---------------- Model 4 ----------------
+  model4_data <- reactive({
+    clustered <- run_cluster_model(brondby_players(), c("progressive_rate", "success_rate"), as.numeric(input$k_m4))
+    label_progressive_success_player(clustered$data) %>%
+      make_hover_text(entity = "player", x_var = "progressive_rate", y_var = "success_rate")
+  })
+  
+  output$plot_m4 <- renderPlotly({
+    plot_cluster_scatter(
+      model4_data(),
+      "progressive_rate",
+      "success_rate",
+      "Model 4 – Brøndby-spillere: progressive afleveringer og succesrate",
+      "Spillertype"
+    )
+  })
+  
+  output$table_m4 <- renderDT({
+    datatable(
+      make_description_table(model4_data(), "progressive_rate", "success_rate"),
+      options = list(
+        dom = "t",
+        pageLength = 10,
+        autoWidth = FALSE,
+        scrollX = TRUE,
+        columnDefs = list(
+          list(width = "42%", targets = 0),
+          list(className = "dt-center", targets = c(1, 2, 3))
+        )
+      ),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = c("Gns. x-variabel", "Gns. y-variabel"), digits = 3) %>%
+      formatRound(columns = "Antal afleveringer", digits = 0)
+  })
+  
+  output$desc_m4 <- renderUI({
+    tags$div(
+      class = "desc-box",
+      tags$h4("Tolkning"),
+      tags$p("Boldsikre opspilsspillere har høj succesrate og lavere progressivitet."),
+      tags$p("Effektive progressive playmakere kombinerer høj fremdrift og høj succes."),
+      tags$p("Risikable boldprogressorer søger fremdrift, men med større boldtabsrisiko.")
+    )
+  })
+  
+  # ---------------- Brøndby dashboard ----------------
+  output$b_total_card <- renderUI({
+    div(
+      class = "kpi-card kpi-purple",
+      div(class = "kpi-value", sum(brondby_players()$antal_afleveringer)),
+      div(class = "kpi-label", "Samlede Brøndby-afleveringer")
+    )
+  })
+  
+  output$b_success_card <- renderUI({
+    div(
+      class = "kpi-card kpi-green",
+      div(class = "kpi-value", percent(mean(brondby_players()$success_rate), accuracy = 0.1)),
+      div(class = "kpi-label", "Gennemsnitlig succesrate")
+    )
+  })
+  
+  output$b_prog_card <- renderUI({
+    div(
+      class = "kpi-card kpi-blue",
+      div(class = "kpi-value", percent(mean(brondby_players()$progressive_rate), accuracy = 0.1)),
+      div(class = "kpi-label", "Gennemsnitlig progressive rate")
+    )
+  })
+  
+  output$b_len_card <- renderUI({
+    div(
+      class = "kpi-card kpi-orange",
+      div(class = "kpi-value", round(mean(brondby_players()$mean_length), 1)),
+      div(class = "kpi-label", "Gennemsnitlig afleveringslængde")
+    )
+  })
+  
+  output$b_plot <- renderPlotly({
+    df <- brondby_players() %>%
+      mutate(
+        hover_text = paste0(
+          "Spiller: ", passer_name,
+          "<br>", nice_axis_label(input$b_x), ": ", round(.data[[input$b_x]], 3),
+          "<br>", nice_axis_label(input$b_y), ": ", round(.data[[input$b_y]], 3),
+          "<br>Antal afleveringer: ", antal_afleveringer
+        )
+      )
+    
+    plot_ly(
+      data = df,
+      x = as.formula(paste0("~", input$b_x)),
+      y = as.formula(paste0("~", input$b_y)),
+      type = "scatter",
+      mode = "markers",
+      text = ~hover_text,
+      hoverinfo = "text",
+      marker = list(size = 14, color = "#10b981", opacity = 0.88)
+    ) %>%
+      config(
+        displaylogo = FALSE,
+        modeBarButtonsToRemove = c(
+          "zoom2d", "pan2d", "select2d", "lasso2d",
+          "zoomIn2d", "zoomOut2d", "autoScale2d",
+          "resetScale2d", "toggleSpikelines"
+        )
+      ) %>%
+      layout(
+        title = list(text = "Brøndby IF – spillerdashboard", x = 0.02, xanchor = "left", font = list(size = 18)),
+        paper_bgcolor = "rgba(0,0,0,0)",
+        plot_bgcolor = "#ffffff",
+        xaxis = list(title = nice_axis_label(input$b_x), gridcolor = "#e5e7eb", zeroline = FALSE),
+        yaxis = list(title = nice_axis_label(input$b_y), gridcolor = "#e5e7eb", zeroline = FALSE),
+        margin = list(l = 70, r = 30, t = 70, b = 70)
+      )
+  })
+  
+  output$b_table <- renderDT({
+    datatable(
+      brondby_players() %>%
+        arrange(desc(antal_afleveringer)) %>%
+        mutate(
+          success_rate = round(success_rate, 3),
+          progressive_rate = round(progressive_rate, 3),
+          forward_rate = round(forward_rate, 3),
+          final_third_rate = round(final_third_rate, 3),
+          mean_length = round(mean_length, 1)
+        ),
+      options = list(pageLength = 15, scrollX = TRUE, autoWidth = FALSE),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    )
+  })
+  
+  # ---------------- Hold dashboard ----------------
+  selected_team_players <- reactive({
+    make_player_summary(pass_data, input$team_pick)
+  })
+  
+  selected_team_summary <- reactive({
+    team_summary %>% filter(team_name == input$team_pick)
+  })
+  
+  output$h_total_card <- renderUI({
+    div(
+      class = "kpi-card kpi-purple",
+      div(class = "kpi-value", selected_team_summary()$antal_afleveringer),
+      div(class = "kpi-label", paste("Samlede afleveringer –", input$team_pick))
+    )
+  })
+  
+  output$h_success_card <- renderUI({
+    div(
+      class = "kpi-card kpi-green",
+      div(class = "kpi-value", percent(selected_team_summary()$success_rate, accuracy = 0.1)),
+      div(class = "kpi-label", "Succesrate")
+    )
+  })
+  
+  output$h_prog_card <- renderUI({
+    div(
+      class = "kpi-card kpi-blue",
+      div(class = "kpi-value", percent(selected_team_summary()$progressive_rate, accuracy = 0.1)),
+      div(class = "kpi-label", "Progressive rate")
+    )
+  })
+  
+  output$h_len_card <- renderUI({
+    div(
+      class = "kpi-card kpi-orange",
+      div(class = "kpi-value", round(selected_team_summary()$mean_length, 1)),
+      div(class = "kpi-label", "Gennemsnitlig afleveringslængde")
+    )
+  })
+  
+  output$h_plot <- renderPlotly({
+    df <- selected_team_players() %>%
+      mutate(
+        hover_text = paste0(
+          "Spiller: ", passer_name,
+          "<br>", nice_axis_label(input$h_x), ": ", round(.data[[input$h_x]], 3),
+          "<br>", nice_axis_label(input$h_y), ": ", round(.data[[input$h_y]], 3),
+          "<br>Antal afleveringer: ", antal_afleveringer
+        )
+      )
+    
+    plot_ly(
+      data = df,
+      x = as.formula(paste0("~", input$h_x)),
+      y = as.formula(paste0("~", input$h_y)),
+      type = "scatter",
+      mode = "markers",
+      text = ~hover_text,
+      hoverinfo = "text",
+      marker = list(size = 14, color = "#3b82f6", opacity = 0.88)
+    ) %>%
+      config(
+        displaylogo = FALSE,
+        modeBarButtonsToRemove = c(
+          "zoom2d", "pan2d", "select2d", "lasso2d",
+          "zoomIn2d", "zoomOut2d", "autoScale2d",
+          "resetScale2d", "toggleSpikelines"
+        )
+      ) %>%
+      layout(
+        title = list(text = paste(input$team_pick, "– spillerdashboard"), x = 0.02, xanchor = "left", font = list(size = 18)),
+        paper_bgcolor = "rgba(0,0,0,0)",
+        plot_bgcolor = "#ffffff",
+        xaxis = list(title = nice_axis_label(input$h_x), gridcolor = "#e5e7eb", zeroline = FALSE),
+        yaxis = list(title = nice_axis_label(input$h_y), gridcolor = "#e5e7eb", zeroline = FALSE),
+        margin = list(l = 70, r = 30, t = 70, b = 70)
+      )
+  })
+  
+  output$h_table <- renderDT({
+    datatable(
+      selected_team_players() %>%
+        arrange(desc(antal_afleveringer)) %>%
+        mutate(
+          success_rate = round(success_rate, 3),
+          progressive_rate = round(progressive_rate, 3),
+          forward_rate = round(forward_rate, 3),
+          final_third_rate = round(final_third_rate, 3),
+          mean_length = round(mean_length, 1)
+        ),
+      options = list(pageLength = 15, scrollX = TRUE, autoWidth = FALSE),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    )
+  })
+  
+  # ---------------- Hold-tal ----------------
+  output$team_data_table <- renderDT({
+    datatable(
+      make_team_data_table(team_summary),
+      options = list(pageLength = 14, scrollX = TRUE, autoWidth = FALSE),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = "Gns. afleveringslængde", digits = 1) %>%
+      formatPercentage(columns = c("Succesrate", "Progressive rate", "Final third rate", "Forward rate"), digits = 1) %>%
+      formatRound(columns = "Antal afleveringer", digits = 0)
+  })
+  
+  # ---------------- Spiller-tal ----------------
+  output$player_data_table <- renderDT({
+    player_table <- make_player_data_table(pass_data, input$player_table_team)
+    
+    datatable(
+      player_table,
+      options = list(pageLength = 15, scrollX = TRUE, autoWidth = FALSE),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = "Gns. afleveringslængde", digits = 1) %>%
+      formatPercentage(columns = c("Succesrate", "Progressive rate", "Final third rate", "Forward rate"), digits = 1) %>%
+      formatRound(columns = "Antal afleveringer", digits = 0)
+  })
+  
+  # ---------------- Pass map ----------------
+  output$pitch_plot <- renderPlotly({
+    validate(
+      need(requireNamespace("ggsoccer", quietly = TRUE), "Installér pakken 'ggsoccer' for at vise pass map-tabben.")
+    )
+    validate(
+      need(any(!is.na(pass_data$start_x)), "Pass map kræver startkoordinater i passes_df. Tilføj fx STARTLOCATIONX/STARTLOCATIONY eller LOCATIONX/LOCATIONY i dit grunddatasæt.")
+    )
+    
+    pitch_df <- make_pass_map_data(
+      pass_data,
+      team_selected = input$pitch_team,
+      match_selected = input$pitch_match,
+      player_selected = input$pitch_player,
+      top_n = input$pitch_top_n,
+      min_passes = input$pitch_min_passes
+    )
+    
+    validate(
+      need(nrow(pitch_df) > 0, "Ingen afleveringsmønstre matcher det valgte filter.")
+    )
+    
+    p <- ggplot(pitch_df) +
+      ggsoccer::annotate_pitch(dimensions = ggsoccer::pitch_opta, colour = "#cbd5e1") +
+      geom_segment(
+        aes(
+          x = from_x,
+          y = from_y,
+          xend = to_x,
+          yend = to_y,
+          size = antal_afleveringer,
+          text = hover_text
+        ),
+        arrow = arrow(length = grid::unit(0.18, "cm"), type = "closed"),
+        colour = "#38bdf8",
+        alpha = 0.70,
+        lineend = "round"
+      ) +
+      scale_size(range = c(0.6, 2.8), guide = "none") +
+      coord_fixed(xlim = c(0, 100), ylim = c(0, 100), clip = "off") +
+      ggsoccer::theme_pitch() +
+      theme(
+        plot.background = element_rect(fill = "white", colour = NA),
+        panel.background = element_rect(fill = "white", colour = NA),
+        plot.title = element_text(size = 18, face = "bold", colour = "#1f2937"),
+        plot.margin = margin(10, 10, 10, 10)
+      ) +
+      labs(title = paste("Pass map –", input$pitch_team))
+    
+    ggplotly(p, tooltip = "text") %>%
+      config(
+        displaylogo = FALSE,
+        modeBarButtonsToRemove = c(
+          "zoom2d", "pan2d", "select2d", "lasso2d",
+          "zoomIn2d", "zoomOut2d", "autoScale2d",
+          "resetScale2d", "toggleSpikelines"
+        )
+      )
+  })
+  
+  # ---------------- Heatmap ----------------
+  output$heat_plot <- renderPlot({
+    validate(
+      need(requireNamespace("ggsoccer", quietly = TRUE), "Installér pakken 'ggsoccer' for at vise heatmap-tabben.")
+    )
+    validate(
+      need(any(!is.na(pass_data$start_x)), "Heatmap kræver koordinater i passes_df.")
+    )
+    
+    heat_df <- make_heatmap_data(
+      pass_data,
+      team_selected = input$heat_team,
+      match_selected = input$heat_match,
+      player_selected = input$heat_player,
+      mode = input$heat_mode
+    )
+    
+    plot_pitch_heatmap(heat_df, paste("Heatmap –", input$heat_team))
+  })
+  
+  # ---------------- Kamp-sammenligning ----------------
+  output$cmp_plot1 <- renderPlot({
+    validate(
+      need(requireNamespace("ggsoccer", quietly = TRUE), "Installér pakken 'ggsoccer' for at vise kamp-sammenligning.")
+    )
+    req(input$cmp_team, input$cmp_match1)
+    
+    cmp1_df <- make_heatmap_data(
+      pass_data,
+      team_selected = input$cmp_team,
+      match_selected = input$cmp_match1,
+      player_selected = input$cmp_player,
+      mode = input$cmp_heat_mode
+    )
+    
+    plot_pitch_heatmap(cmp1_df, input$cmp_match1)
+  })
+  
+  output$cmp_plot2 <- renderPlot({
+    validate(
+      need(requireNamespace("ggsoccer", quietly = TRUE), "Installér pakken 'ggsoccer' for at vise kamp-sammenligning.")
+    )
+    req(input$cmp_team, input$cmp_match2)
+    
+    cmp2_df <- make_heatmap_data(
+      pass_data,
+      team_selected = input$cmp_team,
+      match_selected = input$cmp_match2,
+      player_selected = input$cmp_player,
+      mode = input$cmp_heat_mode
+    )
+    
+    plot_pitch_heatmap(cmp2_df, input$cmp_match2)
+  })
+  
+  output$cmp_table1 <- renderDT({
+    req(input$cmp_team, input$cmp_match1)
+    
+    tbl1 <- make_match_summary(
+      pass_data,
+      team_selected = input$cmp_team,
+      match_selected = input$cmp_match1,
+      player_selected = input$cmp_player
+    )
+    
+    datatable(
+      tbl1,
+      options = list(dom = "t", scrollX = TRUE, autoWidth = FALSE),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = "Gns. afleveringslængde", digits = 1) %>%
+      formatPercentage(columns = c("Succesrate", "Progressive rate", "Final third rate", "Forward rate"), digits = 1)
+  })
+  
+  output$cmp_table2 <- renderDT({
+    req(input$cmp_team, input$cmp_match2)
+    
+    tbl2 <- make_match_summary(
+      pass_data,
+      team_selected = input$cmp_team,
+      match_selected = input$cmp_match2,
+      player_selected = input$cmp_player
+    )
+    
+    datatable(
+      tbl2,
+      options = list(dom = "t", scrollX = TRUE, autoWidth = FALSE),
+      rownames = FALSE,
+      class = "stripe hover nowrap",
+      width = "100%"
+    ) %>%
+      formatRound(columns = "Gns. afleveringslængde", digits = 1) %>%
+      formatPercentage(columns = c("Succesrate", "Progressive rate", "Final third rate", "Forward rate"), digits = 1)
+  })
+  
+  # ---------------------------------------------------------
+  # KAMPE - CLUSTERING APP
+  # ---------------------------------------------------------
+  plot_data <- reactive({
+    advanced_stats %>%
+      filter(
+        !is.na(.data[[input$xvar]]),
+        !is.na(.data[[input$yvar]]),
+        !is.na(cluster2)
+      )
+  })
+  
+  output$cluster_plot <- renderPlotly({
+    df <- plot_data() %>%
+      left_join(cluster_navne, by = "cluster2")
+    
+    kamp <- ggplot(
+      df,
+      aes(
+        x = .data[[input$xvar]],
+        y = .data[[input$yvar]],
+        color = as.factor(cluster2),
+        text = paste(
+          "Match ID:", MATCH_WYID,
+          "<br>Hold:", team_name,
+          "<br>Modstander:", OPPONENT_TEAMNAME,
+          "<br>Cluster:", cluster2,
+          "<br>Cluster-navn:", cluster_navn,
+          "<br>", input$xvar, ":", round(.data[[input$xvar]], 3),
+          "<br>", input$yvar, ":", round(.data[[input$yvar]], 3),
+          "<br>xG pr. skud:", round(XGPERSHOT, 3),
+          "<br>xG:", round(XG, 3),
+          "<br>Gns. skudafstand:", round(AVGDISTANCE, 2)
+        )
+      )
+    ) +
+      geom_point(size = 2) +
+      labs(
+        title = "Clustering af kampe",
+        x = input$xvar,
+        y = input$yvar,
+        color = "Cluster"
+      ) +
+      theme_minimal()
+    
+    ggplotly(kamp, tooltip = "text")
+  })
+  
+  output$cluster_summary_tabel <- renderTable({
+    advanced_stats %>%
+      group_by(cluster2) %>%
+      summarise(
+        shots = round(mean(SHOTS, na.rm = TRUE), 2),
+        xg = round(mean(XG, na.rm = TRUE), 2),
+        goals = round(mean(GOALS, na.rm = TRUE), 2),
+        touches_box = round(mean(TOUCHESINBOX, na.rm = TRUE), 2),
+        prog_runs = round(mean(PROGRESSIVERUNS, na.rm = TRUE), 2),
+        .groups = "drop"
+      ) %>%
+      left_join(cluster_navne, by = "cluster2") %>%
+      select(
+        cluster = cluster2,
+        cluster_navn,
+        shots,
+        xg,
+        goals,
+        touches_box,
+        prog_runs
+      )
+  })
+}
+
+shinyApp(ui, server)
