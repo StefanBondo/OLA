@@ -1,0 +1,93 @@
+wss <- numeric(10)
+
+for (k in 1:10) {
+  km <- kmeans(cluster_scaled, centers = k, nstart = 10)
+  wss[k] <- km$tot.withinss
+}
+
+plot(1:10, wss, type = "b",
+     xlab = "Antal clusters (k)",
+     ylab = "Within-cluster sum of squares")
+
+# vælg få variabler
+cluster_data <- advanced_stats %>%
+  select(
+    SHOTS,
+    XG,
+    GOALS,
+    SHOTSONTARGET,
+    TOUCHESINBOX,
+    PROGRESSIVERUNS
+  ) %>%
+  na.omit()
+
+# scale data
+cluster_scaled <- scale(cluster_data)
+
+# k-means (fx 4 clusters)
+set.seed(123)
+kmeans_model <- kmeans(cluster_scaled, centers = 3)
+
+# tilføj cluster til dataset
+advanced_stats$cluster <- kmeans_model$cluster
+
+
+cluster_summary <- advanced_stats %>%
+  group_by(cluster) %>%
+  summarise(
+    shots = mean(SHOTS),
+    xg = mean(XG),
+    goals = mean(GOALS),
+    touches_box = mean(TOUCHESINBOX),
+    prog_runs = mean(PROGRESSIVERUNS)
+  )
+
+
+cluster_data2 <- advanced_stats %>%
+  select(XGPERSHOT, XG) %>%
+  na.omit()
+
+cluster_scaled2 <- scale(cluster_data2)
+
+set.seed(123)
+kmeans_model2 <- kmeans(cluster_scaled2, centers = 3)
+
+advanced_stats$cluster2 <- kmeans_model2$cluster
+
+advanced_stats2 <- advanced_stats %>%
+  select(MATCH_WYID, team_name) %>%
+  distinct() %>%
+  rename(OPPONENT_TEAMNAME = team_name)
+
+advanced_stats <- advanced_stats %>%
+  left_join(advanced_stats2, by = "MATCH_WYID") %>%
+  filter(team_name != OPPONENT_TEAMNAME)
+
+
+kamp <- ggplot(
+  advanced_stats,
+  aes(
+    x = XGPERSHOT,
+    y = XG,
+    color = as.factor(cluster2),
+    text = paste(
+      "Match ID:", MATCH_WYID,
+      "<br>Hold:", TEAMNAME,
+      "<br>Modstander:", OPPONENT_TEAMNAME,
+      "<br>Cluster:", cluster2,
+      "<br>xG pr. skud:", round(XGPERSHOT, 3),
+      "<br>xG:", round(XG, 3),
+      "<br>Gns. skudafstand:", round(AVGDISTANCE, 2)
+    )
+  )
+) +
+  geom_point(size = 2) +
+  labs(
+    title = "Clustering baseret på xG og xG pr. skud",
+    x = "XGPERSHOT",
+    y = "XG",
+    color = "Cluster"
+  ) +
+  theme_minimal()
+
+ggplotly(kamp, tooltip = "text")
