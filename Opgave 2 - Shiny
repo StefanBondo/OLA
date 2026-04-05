@@ -1,0 +1,674 @@
+library(shiny)
+library(shinydashboard)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(tidyr)
+library(scales)
+library(forcats)
+
+# =========================================================
+# KRAV: disse objekter skal findes i environment
+# =========================================================
+required_objects <- c("xp_table", "xp_match_results", "grundspil_table", "xp_mesterskab", "xp_kvalifikation", "xp_data")
+
+missing_objects <- required_objects[!sapply(required_objects, exists)]
+
+if (length(missing_objects) > 0) {
+  stop(
+    paste(
+      "Følgende objekter mangler i environment:",
+      paste(missing_objects, collapse = ", "),
+      "\nKør xP-analyserne først."
+    )
+  )
+}
+
+# =========================================================
+# KLARGØR DATA
+# =========================================================
+xp_table <- xp_table %>%
+  mutate(
+    xP_diff = round(xP_diff, 2)
+  )
+
+xp_match_results <- xp_match_results %>%
+  mutate(
+    xP = round(xP, 3),
+    win_prob = round(win_prob, 3),
+    draw_prob = round(draw_prob, 3),
+    loss_prob = round(loss_prob, 3)
+  )
+
+# Tilføj match_date hvis muligt
+xp_phase <- xp_match_results %>%
+  left_join(
+    xp_data %>% distinct(MATCH_WYID, match_date),
+    by = "MATCH_WYID"
+  ) %>%
+  arrange(team_name, match_date, MATCH_WYID)
+
+# Nummerer kampe pr. hold
+xp_phase <- xp_phase %>%
+  group_by(team_name) %>%
+  mutate(kamp_nr = row_number()) %>%
+  ungroup()
+
+# Hvis fase ikke allerede findes, lav den
+if (!"fase" %in% names(xp_phase)) {
+  grundspil_table_internal <- xp_phase %>%
+    filter(kamp_nr <= 22) %>%
+    group_by(team_name) %>%
+    summarise(
+      point = sum(faktiske_point, na.rm = TRUE),
+      xP = sum(xP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(point), desc(xP))
+  
+  mesterskabshold <- grundspil_table_internal %>%
+    slice(1:6) %>%
+    pull(team_name)
+  
+  xp_phase <- xp_phase %>%
+    mutate(
+      fase = case_when(
+        kamp_nr <= 22 ~ "Grundspil",
+        kamp_nr > 22 & team_name %in% mesterskabshold ~ "Mesterskabsspil",
+        TRUE ~ "Kvalifikationsspil"
+      )
+    )
+}
+
+# Holdliste
+teams <- sort(unique(xp_match_results$team_name))
+
+# =========================================================
+# UI
+# =========================================================
+ui <- dashboardPage(
+  skin = "blue",
+  dashboardHeader(title = "Expected Points (xP)"),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Ligaoverblik", tabName = "overview", icon = icon("table")),
+      menuItem("Holdanalyse", tabName = "team", icon = icon("shield-halved")),
+      menuItem("Faseanalyse", tabName = "phase", icon = icon("layer-group")),
+      menuItem("Kampanalyse", tabName = "match", icon = icon("futbol")),
+      menuItem("Metode", tabName = "method", icon = icon("chart-line"))
+    )
+  ),
+  dashboardBody(
+    tags$head(
+      tags$style(HTML("
+        .content-wrapper, .right-side {
+          background-color: #f4f6f9;
+        }
+        .small-box h3 {
+          font-size: 28px;
+          font-weight: 700;
+        }
+        .box {
+          border-radius: 10px;
+        }
+        .box-header with-border {
+          font-weight: 700;
+        }
+      "))
+    ),
+    tabItems(
+      
+      # =====================================================
+      # TAB 1: LIGAOVERBLIK
+      # =====================================================
+      tabItem(
+        tabName = "overview",
+        fluidRow(
+          valueBoxOutput("teamsBox", width = 3),
+          valueBoxOutput("matchesBox", width = 3),
+          valueBoxOutput("topXPBox", width = 3),
+          valueBoxOutput("topPointBox", width = 3)
+        ),
+        fluidRow(
+          box(
+            width = 12,
+            title = "Expected Points (xP) – hele ligaen",
+            status = "primary",
+            solidHeader = TRUE,
+            DTOutput("leagueTable")
+          )
+        ),
+        fluidRow(
+          box(
+            width = 6,
+            title = "xP vs faktiske point",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("xpVsPointsPlot", height = 450)
+          ),
+          box(
+            width = 6,
+            title = "Afvigelse mellem xP og faktiske point",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("xpDiffPlot", height = 450)
+          )
+        )
+      ),
+      
+      # =====================================================
+      # TAB 2: HOLDANALYSE
+      # =====================================================
+      tabItem(
+        tabName = "team",
+        fluidRow(
+          box(
+            width = 4,
+            title = "Vælg hold",
+            status = "primary",
+            solidHeader = TRUE,
+            selectInput("team_select", "Hold", choices = teams, selected = "Brøndby")
+          ),
+          valueBoxOutput("teamXPBox", width = 2),
+          valueBoxOutput("teamPointsBox", width = 2),
+          valueBoxOutput("teamDiffBox", width = 2),
+          valueBoxOutput("teamMatchesBox", width = 2)
+        ),
+        fluidRow(
+          box(
+            width = 12,
+            title = "Kamp for kamp",
+            status = "primary",
+            solidHeader = TRUE,
+            DTOutput("teamMatchTable")
+          )
+        ),
+        fluidRow(
+          box(
+            width = 6,
+            title = "xP kamp for kamp",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("teamXPPlot", height = 450)
+          ),
+          box(
+            width = 6,
+            title = "Win / Draw / Loss sandsynligheder",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("teamProbPlot", height = 450)
+          )
+        ),
+        fluidRow(
+          box(
+            width = 12,
+            title = "Holdets performance fordelt på faser",
+            status = "primary",
+            solidHeader = TRUE,
+            DTOutput("teamPhaseTable")
+          )
+        )
+      ),
+      
+      # =====================================================
+      # TAB 3: FASEANALYSE
+      # =====================================================
+      tabItem(
+        tabName = "phase",
+        fluidRow(
+          box(
+            width = 4,
+            title = "Vælg fase",
+            status = "primary",
+            solidHeader = TRUE,
+            selectInput(
+              "phase_select",
+              "Fase",
+              choices = c("Grundspil", "Mesterskabsspil", "Kvalifikationsspil"),
+              selected = "Grundspil"
+            )
+          )
+        ),
+        fluidRow(
+          box(
+            width = 12,
+            title = "Fasetabel",
+            status = "primary",
+            solidHeader = TRUE,
+            DTOutput("phaseTable")
+          )
+        ),
+        fluidRow(
+          box(
+            width = 6,
+            title = "xP vs point i valgt fase",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("phaseScatterPlot", height = 450)
+          ),
+          box(
+            width = 6,
+            title = "Forskel i valgt fase",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("phaseDiffPlot", height = 450)
+          )
+        )
+      ),
+      
+      # =====================================================
+      # TAB 4: KAMPANALYSE
+      # =====================================================
+      tabItem(
+        tabName = "match",
+        fluidRow(
+          box(
+            width = 6,
+            title = "Vælg hold",
+            status = "primary",
+            solidHeader = TRUE,
+            selectInput("match_team_select", "Hold", choices = teams, selected = "Brøndby")
+          ),
+          box(
+            width = 6,
+            title = "Vælg kamp",
+            status = "primary",
+            solidHeader = TRUE,
+            uiOutput("match_ui")
+          )
+        ),
+        fluidRow(
+          valueBoxOutput("matchXPBox", width = 3),
+          valueBoxOutput("matchPointBox", width = 3),
+          valueBoxOutput("matchWinProbBox", width = 3),
+          valueBoxOutput("matchLossProbBox", width = 3)
+        ),
+        fluidRow(
+          box(
+            width = 12,
+            title = "Sandsynlighedsfordeling for valgt kamp",
+            status = "primary",
+            solidHeader = TRUE,
+            plotlyOutput("singleMatchProbPlot", height = 400)
+          )
+        )
+      ),
+      
+      # =====================================================
+      # TAB 5: METODE
+      # =====================================================
+      tabItem(
+        tabName = "method",
+        fluidRow(
+          box(
+            width = 12,
+            title = "Metode og fortolkning",
+            status = "primary",
+            solidHeader = TRUE,
+            HTML("
+              <h4>Expected Goals (xG)</h4>
+              <p>xG er estimeret via en logistisk regressionsmodel, hvor sandsynligheden for scoring på hvert skud beregnes ud fra blandt andet skudafstand, skudvinkel, kropsdel og spilsituation.</p>
+
+              <h4>Expected Points (xP)</h4>
+              <p>xP beregnes ved at simulere hver kamp 10.000 gange på baggrund af skuddenes xG-værdier. For hver simulation udregnes kampens resultat, hvorefter sandsynlighederne for sejr, uafgjort og nederlag estimeres.</p>
+
+              <p>xP udregnes som:</p>
+              <ul>
+                <li>3 × sandsynlighed for sejr</li>
+                <li>1 × sandsynlighed for uafgjort</li>
+                <li>0 × sandsynlighed for nederlag</li>
+              </ul>
+
+              <h4>Fortolkning</h4>
+              <p>Hvis et hold har flere faktiske point end xP, har holdet overperformet i forhold til de chancer, de har skabt og tilladt. Hvis xP er højere end faktiske point, har holdet underperformet.</p>
+
+              <h4>Bemærkning om data</h4>
+              <p>For enkelte hold kan xP være beregnet på færre kampe end de officielle point, hvis eventdata mangler for en kamp. Det kan gøre sammenligningen en smule misvisende.</p>
+            ")
+          )
+        )
+      )
+    )
+  )
+)
+
+# =========================================================
+# SERVER
+# =========================================================
+server <- function(input, output, session) {
+  
+  # -------------------------------------------------------
+  # OVERBLIK
+  # -------------------------------------------------------
+  output$teamsBox <- renderValueBox({
+    valueBox(length(unique(xp_table$team_name)), "Hold", icon = icon("users"), color = "blue")
+  })
+  
+  output$matchesBox <- renderValueBox({
+    valueBox(sum(xp_table$kampe, na.rm = TRUE), "Samlede kampe", icon = icon("calendar"), color = "teal")
+  })
+  
+  output$topXPBox <- renderValueBox({
+    top_team <- xp_table %>% arrange(desc(samlet_xP)) %>% slice(1)
+    valueBox(round(top_team$samlet_xP, 2), paste("Højeste xP:", top_team$team_name), icon = icon("chart-line"), color = "green")
+  })
+  
+  output$topPointBox <- renderValueBox({
+    top_team <- xp_table %>% arrange(desc(faktiske_point)) %>% slice(1)
+    valueBox(top_team$faktiske_point, paste("Flest point:", top_team$team_name), icon = icon("trophy"), color = "yellow")
+  })
+  
+  output$leagueTable <- renderDT({
+    datatable(
+      xp_table %>%
+        arrange(desc(samlet_xP)) %>%
+        mutate(
+          `Expected Wins` = round(win_prob_sum, 2),
+          `Expected Draws` = round(draw_prob_sum, 2),
+          `Expected Losses` = round(loss_prob_sum, 2)
+        ) %>%
+        select(
+          Hold = team_name,
+          Kampe = kampe,
+          xP = samlet_xP,
+          Point = faktiske_point,
+          Forskel = xP_diff,
+          `Expected Wins`,
+          `Expected Draws`,
+          `Expected Losses`
+        ),
+      rownames = FALSE,
+      options = list(pageLength = 12, scrollX = TRUE)
+    )
+  })
+  
+  output$xpVsPointsPlot <- renderPlotly({
+    p <- ggplot(xp_table, aes(x = samlet_xP, y = faktiske_point, text = team_name)) +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+      geom_point(size = 3) +
+      geom_text(aes(label = team_name), nudge_y = 0.6, size = 4) +
+      labs(
+        x = "Samlet xP",
+        y = "Faktiske point",
+        title = "xP vs faktiske point"
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "x", "y"))
+  })
+  
+  output$xpDiffPlot <- renderPlotly({
+    plot_df <- xp_table %>%
+      mutate(team_name = fct_reorder(team_name, xP_diff))
+    
+    p <- ggplot(plot_df, aes(x = team_name, y = xP_diff, text = team_name)) +
+      geom_col() +
+      coord_flip() +
+      labs(
+        x = "",
+        y = "xP - faktiske point",
+        title = "Afvigelse mellem xP og point"
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "y"))
+  })
+  
+  # -------------------------------------------------------
+  # HOLDANALYSE
+  # -------------------------------------------------------
+  selected_team_data <- reactive({
+    xp_match_results %>%
+      filter(team_name == input$team_select) %>%
+      arrange(desc(xP))
+  })
+  
+  output$teamXPBox <- renderValueBox({
+    df <- selected_team_data()
+    valueBox(round(sum(df$xP, na.rm = TRUE), 2), "Samlet xP", icon = icon("chart-area"), color = "blue")
+  })
+  
+  output$teamPointsBox <- renderValueBox({
+    df <- selected_team_data()
+    valueBox(sum(df$faktiske_point, na.rm = TRUE), "Faktiske point", icon = icon("trophy"), color = "green")
+  })
+  
+  output$teamDiffBox <- renderValueBox({
+    df <- selected_team_data()
+    diff_val <- round(sum(df$xP, na.rm = TRUE) - sum(df$faktiske_point, na.rm = TRUE), 2)
+    valueBox(diff_val, "Forskel", icon = icon("scale-balanced"), color = "yellow")
+  })
+  
+  output$teamMatchesBox <- renderValueBox({
+    df <- selected_team_data()
+    valueBox(nrow(df), "Kampe", icon = icon("futbol"), color = "teal")
+  })
+  
+  output$teamMatchTable <- renderDT({
+    df <- xp_match_results %>%
+      filter(team_name == input$team_select) %>%
+      transmute(
+        Kamp = match_label,
+        Modstander = modstander,
+        `Win prob` = win_prob,
+        `Draw prob` = draw_prob,
+        `Loss prob` = loss_prob,
+        xP = xP,
+        `Faktiske point` = faktiske_point,
+        `Faktiske mål` = faktiske_mål
+      ) %>%
+      arrange(desc(xP))
+    
+    datatable(df, rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE))
+  })
+  
+  output$teamXPPlot <- renderPlotly({
+    df <- xp_match_results %>%
+      filter(team_name == input$team_select) %>%
+      mutate(match_label = fct_reorder(match_label, xP))
+    
+    p <- ggplot(df, aes(x = match_label, y = xP, text = match_label)) +
+      geom_col() +
+      coord_flip() +
+      labs(
+        x = "",
+        y = "xP",
+        title = paste("xP kamp for kamp -", input$team_select)
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "y"))
+  })
+  
+  output$teamProbPlot <- renderPlotly({
+    df <- xp_match_results %>%
+      filter(team_name == input$team_select) %>%
+      select(match_label, win_prob, draw_prob, loss_prob) %>%
+      pivot_longer(
+        cols = c(win_prob, draw_prob, loss_prob),
+        names_to = "resultat",
+        values_to = "prob"
+      ) %>%
+      mutate(
+        resultat = recode(
+          resultat,
+          win_prob = "Sejr",
+          draw_prob = "Uafgjort",
+          loss_prob = "Nederlag"
+        )
+      )
+    
+    p <- ggplot(df, aes(x = match_label, y = prob, fill = resultat, text = match_label)) +
+      geom_col(position = "fill") +
+      coord_flip() +
+      scale_y_continuous(labels = percent) +
+      labs(
+        x = "",
+        y = "Andel",
+        title = paste("Win / Draw / Loss -", input$team_select)
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "y", "fill"))
+  })
+  
+  output$teamPhaseTable <- renderDT({
+    df <- xp_phase %>%
+      filter(team_name == input$team_select) %>%
+      group_by(fase) %>%
+      summarise(
+        Kampe = n(),
+        xP = round(sum(xP, na.rm = TRUE), 2),
+        Point = sum(faktiske_point, na.rm = TRUE),
+        Forskel = round(sum(xP, na.rm = TRUE) - sum(faktiske_point, na.rm = TRUE), 2),
+        .groups = "drop"
+      )
+    
+    datatable(df, rownames = FALSE, options = list(dom = "t"))
+  })
+  
+  # -------------------------------------------------------
+  # FASEANALYSE
+  # -------------------------------------------------------
+  phase_data <- reactive({
+    if (input$phase_select == "Grundspil") {
+      grundspil_table
+    } else if (input$phase_select == "Mesterskabsspil") {
+      xp_mesterskab
+    } else {
+      xp_kvalifikation
+    }
+  })
+  
+  output$phaseTable <- renderDT({
+    df <- phase_data() %>%
+      transmute(
+        Hold = team_name,
+        Kampe = kampe,
+        xP = xP,
+        Point = point,
+        Forskel = diff
+      )
+    
+    datatable(df, rownames = FALSE, options = list(pageLength = 10, dom = "tip"))
+  })
+  
+  output$phaseScatterPlot <- renderPlotly({
+    df <- phase_data()
+    
+    p <- ggplot(df, aes(x = xP, y = point, text = team_name)) +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+      geom_point(size = 3) +
+      geom_text(aes(label = team_name), nudge_y = 0.5, size = 4) +
+      labs(
+        x = "xP",
+        y = "Point",
+        title = paste(input$phase_select, "- xP vs point")
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "x", "y"))
+  })
+  
+  output$phaseDiffPlot <- renderPlotly({
+    df <- phase_data() %>%
+      mutate(team_name = fct_reorder(team_name, diff))
+    
+    p <- ggplot(df, aes(x = team_name, y = diff, text = team_name)) +
+      geom_col() +
+      coord_flip() +
+      labs(
+        x = "",
+        y = "xP - point",
+        title = paste(input$phase_select, "- forskel")
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "y"))
+  })
+  
+  # -------------------------------------------------------
+  # KAMPANALYSE
+  # -------------------------------------------------------
+  output$match_ui <- renderUI({
+    req(input$match_team_select)
+    
+    df <- xp_match_results %>%
+      left_join(
+        xp_data %>% distinct(MATCH_WYID, match_date),
+        by = "MATCH_WYID"
+      ) %>%
+      filter(team_name == input$match_team_select) %>%
+      arrange(match_date)
+    
+    # Lav labels med dato + kamp
+    choices <- setNames(
+      df$match_label,
+      paste0(format(df$match_date, "%d-%m-%Y"), " | ", df$match_label)
+    )
+    
+    selectInput(
+      "match_select",
+      "Kamp",
+      choices = choices,
+      selected = tail(df$match_label, 1)
+    )
+  })
+  
+  selected_match <- reactive({
+    req(input$match_team_select, input$match_select)
+    
+    xp_match_results %>%
+      filter(
+        team_name == input$match_team_select,
+        match_label == input$match_select
+      )
+  })
+  
+  output$matchXPBox <- renderValueBox({
+    df <- selected_match()
+    valueBox(round(df$xP[1], 2), "xP", icon = icon("chart-line"), color = "blue")
+  })
+  
+  output$matchPointBox <- renderValueBox({
+    df <- selected_match()
+    valueBox(df$faktiske_point[1], "Faktiske point", icon = icon("trophy"), color = "green")
+  })
+  
+  output$matchWinProbBox <- renderValueBox({
+    df <- selected_match()
+    valueBox(paste0(round(df$win_prob[1] * 100, 1), "%"), "Sejrssandsynlighed", icon = icon("circle-check"), color = "yellow")
+  })
+  
+  output$matchLossProbBox <- renderValueBox({
+    df <- selected_match()
+    valueBox(paste0(round(df$loss_prob[1] * 100, 1), "%"), "Nederlagssandsynlighed", icon = icon("circle-xmark"), color = "red")
+  })
+  
+  output$singleMatchProbPlot <- renderPlotly({
+    df <- selected_match()
+    
+    plot_df <- data.frame(
+      Udfald = c("Sejr", "Uafgjort", "Nederlag"),
+      Sandsynlighed = c(df$win_prob[1], df$draw_prob[1], df$loss_prob[1])
+    )
+    
+    p <- ggplot(plot_df, aes(x = Udfald, y = Sandsynlighed, text = Udfald)) +
+      geom_col() +
+      scale_y_continuous(labels = percent) +
+      labs(
+        x = "",
+        y = "Sandsynlighed",
+        title = df$match_label[1]
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = c("text", "y"))
+  })
+}
+
+# =========================================================
+# RUN APP
+# =========================================================
+shinyApp(ui, server)
