@@ -1,0 +1,352 @@
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(forcats)
+library(scales)
+library(stringr)
+
+shots_df_all_shots <- shots_df_all_shots %>%
+  filter(liga == "Superliga") %>%
+  filter(match_date >= as.Date("2024-07-01") &
+           match_date <= as.Date("2025-06-01"))
+
+# --------------------------------------------------
+# 1. Hjælpefunktion: normaliser holdnavne
+# --------------------------------------------------
+normalize_team_name <- function(x) {
+  x %>%
+    str_squish() %>%
+    str_to_lower(locale = "da") %>%
+    str_replace_all("é", "e") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyske", "sonderjyske") %>%
+    str_replace_all("sønderjyskee", "sonderjyske")
+}
+
+# --------------------------------------------------
+# 2. Klargør indeværende sæsons skuddata til xP-simulering
+# --------------------------------------------------
+xp_data <- shots_df_all_shots %>%
+  mutate(
+    SHOTBODYPART = case_when(
+      grepl("^\\[", SHOTBODYPART) & grepl("assist", SHOTBODYPART) ~ "assist",
+      grepl("^\\[", SHOTBODYPART) & grepl("goal", SHOTBODYPART) ~ "goal",
+      grepl("^\\[", SHOTBODYPART) & grepl("head", SHOTBODYPART) ~ "head_or_other",
+      grepl("^\\[", SHOTBODYPART) & grepl("intercep", SHOTBODYPART) ~ "interception",
+      grepl("^\\[", SHOTBODYPART) & grepl("opportun", SHOTBODYPART) ~ "opportunity",
+      grepl("^\\[", SHOTBODYPART) & grepl("shot_aft", SHOTBODYPART) ~ "shot_after_corner",
+      grepl("^\\[", SHOTBODYPART) & grepl("touch_in", SHOTBODYPART) ~ "touch_in_box",
+      SHOTBODYPART == "[]" ~ "unknown",
+      TRUE ~ SHOTBODYPART
+    ),
+    hovedstød = ifelse(SHOTBODYPART == "head_or_other", 1, 0),
+    Spilsituation = case_when(
+      grepl("corner", coalesce(SECONDARYTYPE1, "")) |
+        grepl("corner", coalesce(SECONDARYTYPE2, "")) |
+        grepl("corner", coalesce(SECONDARYTYPE3, "")) |
+        grepl("corner", coalesce(SECONDARYTYPE4, "")) ~ "Hjørne",
+      grepl("free_kick", coalesce(SECONDARYTYPE1, "")) |
+        grepl("free_kick", coalesce(SECONDARYTYPE2, "")) |
+        grepl("free_kick", coalesce(SECONDARYTYPE3, "")) ~ "Frispark",
+      grepl("throw_in", coalesce(SECONDARYTYPE1, "")) |
+        grepl("throw_in", coalesce(SECONDARYTYPE2, "")) |
+        grepl("throw_in", coalesce(SECONDARYTYPE3, "")) ~ "Indkast",
+      grepl("head", coalesce(SECONDARYTYPE1, "")) |
+        grepl("head", coalesce(SECONDARYTYPE2, "")) ~ "Hovedstød",
+      TRUE ~ "Åbent spil"
+    ),
+    shot_distance = sqrt((100 - LOCATIONX)^2 + (50 - LOCATIONY)^2),
+    goal_width = 7.32,
+    x = 100 - LOCATIONX,
+    y = abs(LOCATIONY - 50),
+    shot_angle_deg = atan(goal_width * x / (x^2 + y^2 - (goal_width / 2)^2)),
+    shot_angle_deg = ifelse(shot_angle_deg < 0, shot_angle_deg + pi, shot_angle_deg),
+    shot_angle_deg = shot_angle_deg * 180 / pi,
+    body_part = case_when(
+      SHOTBODYPART == "left_foot" ~ "left_foot",
+      SHOTBODYPART == "right_foot" ~ "right_foot",
+      SHOTBODYPART == "head_or_other" ~ "head_or_other",
+      TRUE ~ "other"
+    ),
+    body_part = factor(body_part),
+    Spilsituation = factor(Spilsituation)
+  ) %>%
+  filter(
+    !is.na(EVENT_WYID),
+    !is.na(MATCH_WYID),
+    !is.na(team_name),
+    !is.na(match_label),
+    !is.na(shot_distance),
+    !is.na(shot_angle_deg),
+    !is.na(body_part),
+    !is.na(Spilsituation)
+  ) %>%
+  distinct(EVENT_WYID, .keep_all = TRUE)
+
+# --------------------------------------------------
+# 3. Beregn xG på hvert skud
+# --------------------------------------------------
+xp_data$pred_prob <- predict(
+  model_logit,
+  newdata = xp_data,
+  type = "response"
+)
+
+# --------------------------------------------------
+# 4. Hjælpefunktion: hent faktiske mål og point fra match_label
+# --------------------------------------------------
+extract_actual_result <- function(match_label, team1, team2) {
+  label_clean <- str_squish(match_label)
+  pattern <- "^(.*)\\s[–-]\\s(.*),\\s*(\\d+)\\s*[–-]\\s*(\\d+)$"
+  m <- str_match(label_clean, pattern)
+  
+  if (nrow(m) == 0 || any(is.na(m[1, ]))) {
+    return(list(
+      team1_goals = NA_real_,
+      team2_goals = NA_real_,
+      team1_points = NA_real_,
+      team2_points = NA_real_
+    ))
+  }
+  
+  home_team_raw  <- str_squish(m[1, 2])
+  away_team_raw  <- str_squish(m[1, 3])
+  home_goals     <- as.numeric(m[1, 4])
+  away_goals     <- as.numeric(m[1, 5])
+  
+  home_team <- normalize_team_name(home_team_raw)
+  away_team <- normalize_team_name(away_team_raw)
+  team1_norm <- normalize_team_name(team1)
+  team2_norm <- normalize_team_name(team2)
+  
+  goal_map <- c(home_goals, away_goals)
+  names(goal_map) <- c(home_team, away_team)
+  
+  team1_goals <- unname(goal_map[team1_norm])
+  team2_goals <- unname(goal_map[team2_norm])
+  
+  if (length(team1_goals) == 0 || is.na(team1_goals)) team1_goals <- NA_real_
+  if (length(team2_goals) == 0 || is.na(team2_goals)) team2_goals <- NA_real_
+  
+  team1_points <- case_when(
+    is.na(team1_goals) | is.na(team2_goals) ~ NA_real_,
+    team1_goals > team2_goals ~ 3,
+    team1_goals == team2_goals ~ 1,
+    TRUE ~ 0
+  )
+  
+  team2_points <- case_when(
+    is.na(team1_goals) | is.na(team2_goals) ~ NA_real_,
+    team2_goals > team1_goals ~ 3,
+    team2_goals == team1_goals ~ 1,
+    TRUE ~ 0
+  )
+  
+  list(
+    team1_goals = team1_goals,
+    team2_goals = team2_goals,
+    team1_points = team1_points,
+    team2_points = team2_points
+  )
+}
+
+# --------------------------------------------------
+# 5. Funktion der simulerer én kamp
+# --------------------------------------------------
+simulate_match_xp <- function(match_df, n_sim = 10000) {
+  teams <- sort(unique(match_df$team_name))
+  
+  if (length(teams) != 2) {
+    return(NULL)
+  }
+  
+  team1 <- teams[1]
+  team2 <- teams[2]
+  
+  team1_goals_sim <- numeric(n_sim)
+  team2_goals_sim <- numeric(n_sim)
+  
+  for (i in 1:n_sim) {
+    sim_goal <- rbinom(nrow(match_df), 1, match_df$pred_prob)
+    team1_goals_sim[i] <- sum(sim_goal[match_df$team_name == team1], na.rm = TRUE)
+    team2_goals_sim[i] <- sum(sim_goal[match_df$team_name == team2], na.rm = TRUE)
+  }
+  
+  p_team1_win <- mean(team1_goals_sim > team2_goals_sim)
+  p_draw      <- mean(team1_goals_sim == team2_goals_sim)
+  p_team2_win <- mean(team2_goals_sim > team1_goals_sim)
+  
+  xP_team1 <- 3 * p_team1_win + p_draw
+  xP_team2 <- 3 * p_team2_win + p_draw
+  
+  match_label_one <- unique(match_df$match_label)[1]
+  actual_result <- extract_actual_result(match_label_one, team1, team2)
+  
+  data.frame(
+    MATCH_WYID = unique(match_df$MATCH_WYID)[1],
+    match_label = match_label_one,
+    team_name = c(team1, team2),
+    modstander = c(team2, team1),
+    win_prob = c(p_team1_win, p_team2_win),
+    draw_prob = c(p_draw, p_draw),
+    loss_prob = c(p_team2_win, p_team1_win),
+    xP = c(xP_team1, xP_team2),
+    faktiske_point = c(actual_result$team1_points, actual_result$team2_points),
+    faktiske_mål = c(actual_result$team1_goals, actual_result$team2_goals)
+  )
+}
+
+# --------------------------------------------------
+# 6. Simuler alle kampe
+# --------------------------------------------------
+match_list <- xp_data %>%
+  group_by(MATCH_WYID) %>%
+  group_split()
+
+xp_match_results <- lapply(match_list, simulate_match_xp, n_sim = 10000) %>%
+  bind_rows()
+
+# --------------------------------------------------
+# 7. xP-tabel for alle hold
+# --------------------------------------------------
+xp_table <- xp_match_results %>%
+  group_by(team_name) %>%
+  summarise(
+    kampe = n(),
+    samlet_xP = sum(xP, na.rm = TRUE),
+    faktiske_point = sum(faktiske_point, na.rm = TRUE),
+    xP_diff = samlet_xP - faktiske_point,
+    win_prob_sum = sum(win_prob, na.rm = TRUE),
+    draw_prob_sum = sum(draw_prob, na.rm = TRUE),
+    loss_prob_sum = sum(loss_prob, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    samlet_xP = round(samlet_xP, 2),
+    faktiske_point = round(faktiske_point, 2),
+    xP_diff = round(xP_diff, 2),
+    win_prob_sum = round(win_prob_sum, 2),
+    draw_prob_sum = round(draw_prob_sum, 2),
+    loss_prob_sum = round(loss_prob_sum, 2)
+  ) %>%
+  arrange(desc(samlet_xP))
+
+xp_table
+
+# --------------------------------------------------
+# 8. Brøndby specifikt
+# --------------------------------------------------
+brondby_xp <- xp_match_results %>%
+  filter(team_name == "Brøndby") %>%
+  summarise(
+    kampe = n(),
+    samlet_xP = round(sum(xP, na.rm = TRUE), 2),
+    faktiske_point = sum(faktiske_point, na.rm = TRUE),
+    forskel = round(sum(xP, na.rm = TRUE) - sum(faktiske_point, na.rm = TRUE), 2)
+  )
+
+brondby_xp
+
+# --------------------------------------------------
+# 9. Brøndbys kampe kamp for kamp
+# --------------------------------------------------
+brondby_kampe <- xp_match_results %>%
+  filter(team_name == "Brøndby") %>%
+  select(
+    match_label,
+    modstander,
+    win_prob,
+    draw_prob,
+    loss_prob,
+    xP,
+    faktiske_point,
+    faktiske_mål
+  ) %>%
+  mutate(
+    win_prob = round(win_prob, 3),
+    draw_prob = round(draw_prob, 3),
+    loss_prob = round(loss_prob, 3),
+    xP = round(xP, 3)
+  ) %>%
+  arrange(desc(xP))
+
+brondby_kampe
+
+
+
+
+# ------------------------------------------------------
+# ændre tabeller 
+# ------------------------------------------------------
+library(gt)
+library(dplyr)
+
+xp_table %>%
+  mutate(
+    placering = row_number()
+  ) %>%
+  gt() %>%
+  cols_label(
+    team_name = "Hold",
+    samlet_xP = "xP",
+    faktiske_point = "Point",
+    xP_diff = "Forskel",
+    win_prob_sum = "Expected Wins",
+    draw_prob_sum = "Expected Draws",
+    loss_prob_sum = "Expected Losses"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "#e6f4ea"),
+    locations = cells_body(
+      rows = placering <= 6
+    )
+  ) %>%
+  tab_header(
+    title = "xP-tabel",
+    subtitle = "Top 6 markeret"
+  )
+
+
+
+
+library(gt)
+library(dplyr)
+
+xp_table %>%
+  mutate(
+    xP_diff = round(xP_diff, 2)
+  ) %>%
+  gt() %>%
+  cols_label(
+    team_name = "Hold",
+    kampe = "Kampe",
+    samlet_xP = "xP",
+    faktiske_point = "Point",
+    xP_diff = "Forskel",
+    win_prob_sum = "Sejr (xP)",
+    draw_prob_sum = "Uafgjort",
+    loss_prob_sum = "Nederlag"
+  ) %>%
+  fmt_number(
+    columns = c(samlet_xP, xP_diff, win_prob_sum, draw_prob_sum, loss_prob_sum),
+    decimals = 2
+  ) %>%
+  cols_align(align = "center", everything()) %>%
+  tab_header(
+    title = "Expected Points (xP) – Superligaen",
+    subtitle = "Sammenligning mellem forventede og faktiske point"
+  ) %>%
+  data_color(
+    columns = xP_diff,
+    colors = scales::col_numeric(
+      palette = c("#d73027", "#ffffbf", "#1a9850"),
+      domain = c(min(xp_table$xP_diff), max(xp_table$xP_diff))
+    )
+  )
