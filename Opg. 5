@@ -1,6 +1,4 @@
 source("util.R")
-install.packages("plotly")
-library(plotly)
 library(dplyr)
 library(tidyr)
 library(purrr)
@@ -181,71 +179,78 @@ p_shot_map <- ggplot(shots_xy, aes(x = sx, y = sy)) +
 print(p_shot_map)
 
 # -------- Visualisering D: Spilstilsprofil (uden clustering) --------
-# Mere enkel og aflæselig: få variable ad gangen
+# To figurer: øverst afleveringsmål, nederst skudmål. Ingen outlier-prikker.
 
-profile_vars <- c("pass_success_rate", "mean_pass_length", "shots", "mean_shot_xg")
-profile_labels <- c(
+profile_vars_pass <- c("pass_success_rate", "mean_pass_length")
+profile_labels_pass <- c(
   pass_success_rate = "Afleveringssikkerhed",
-  mean_pass_length = "Afleveringslængde",
+  mean_pass_length = "Afleveringslængde"
+)
+profile_vars_shot <- c("shots", "mean_shot_xg")
+profile_labels_shot <- c(
   shots = "Skud pr. kamp",
   mean_shot_xg = "xG pr. skud"
 )
 
-profile_long <- match_profile %>%
-  select(gender, all_of(profile_vars)) %>%
-  pivot_longer(cols = all_of(profile_vars), names_to = "metric", values_to = "value") %>%
-  mutate(metric = factor(metric, levels = profile_vars, labels = unname(profile_labels)))
+profile_long_pass <- match_profile %>%
+  select(gender, all_of(profile_vars_pass)) %>%
+  pivot_longer(cols = all_of(profile_vars_pass), names_to = "metric", values_to = "value") %>%
+  mutate(metric = factor(metric, levels = profile_vars_pass, labels = unname(profile_labels_pass)))
 
-p_profile_box <- ggplot(profile_long, aes(x = gender, y = value, fill = gender)) +
-  geom_boxplot(alpha = 0.65, width = 0.6, outlier.alpha = 0.45) +
-  facet_wrap(~ metric, scales = "free_y", ncol = 2) +
+profile_long_shot <- match_profile %>%
+  select(gender, all_of(profile_vars_shot)) %>%
+  pivot_longer(cols = all_of(profile_vars_shot), names_to = "metric", values_to = "value") %>%
+  mutate(metric = factor(metric, levels = profile_vars_shot, labels = unname(profile_labels_shot)))
+
+p_profile_box_pass <- ggplot(profile_long_pass, aes(x = gender, y = value, fill = gender)) +
+  geom_boxplot(alpha = 0.65, width = 0.6, outlier.shape = NA) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
   labs(
     title = "Spilstilsprofil: mænd vs. kvinder",
-    subtitle = "4 nøglemål pr. kamp (simpel sammenligning)",
+    subtitle = "Aflevering pr. kamp",
     x = NULL, y = "Værdi"
   ) +
   scale_fill_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
   theme(legend.position = "none")
 
-print(p_profile_box)
+p_profile_box_shot <- ggplot(profile_long_shot, aes(x = gender, y = value, fill = gender)) +
+  geom_boxplot(alpha = 0.65, width = 0.6, outlier.shape = NA) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+  labs(
+    title = NULL,
+    subtitle = "Skud pr. kamp",
+    x = NULL, y = "Værdi"
+  ) +
+  scale_fill_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
+  theme(legend.position = "none")
 
-# Matchniveau-scatter med kun 2 akser + tydelig hover
+print(p_profile_box_pass)
+print(p_profile_box_shot)
+
+# Matchniveau-scatter (ét plot) — kun afleveringsmål
 scatter_df <- match_profile %>%
-  select(gender, match_id, pass_success_rate, mean_pass_length, shots, mean_shot_xg) %>%
+  select(gender, pass_success_rate, mean_pass_length) %>%
   drop_na()
 
 if (nrow(scatter_df) > 0) {
-  scatter_df <- scatter_df %>%
-    mutate(
-      hover_txt = paste0(
-        "Match ID: ", match_id,
-        "<br>Køn: ", gender,
-        "<br>Afleveringssikkerhed: ", scales::percent(pass_success_rate, accuracy = 0.1),
-        "<br>Afleveringslængde: ", round(mean_pass_length, 1),
-        "<br>Skud pr. kamp: ", round(shots, 1),
-        "<br>xG pr. skud: ", round(mean_shot_xg, 3)
-      )
-    )
-
   p_style_scatter <- ggplot(
     scatter_df,
     aes(
       x = mean_pass_length,
       y = pass_success_rate,
       color = gender,
-      shape = gender,
-      size = shots
+      shape = gender
     )
   ) +
-    geom_point(alpha = 0.75) +
+    geom_point(alpha = 0.75, size = 2.2) +
     labs(
-      title = "Spilstil i 2D (uden cluster)",
-      subtitle = "X: afleveringslængde, Y: afleveringssikkerhed, boblestørrelse: skud pr. kamp",
+      title = "Kvinder foretager længere afleveringer end mænd — med lavere afleveringssikkerhed",
+      subtitle = "Hvert punkt er én kamp: andel succesfulde afleveringer mod gennemsnitlig afleveringslængde",
       x = "Afleveringslængde (gennemsnit pr. kamp)",
       y = "Afleveringssikkerhed",
+      caption = "Kilde: Statsbomb og egneberegninger",
       color = "Køn",
-      shape = "Køn",
-      size = "Skud pr. kamp"
+      shape = "Køn"
     ) +
     scale_color_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
     scale_shape_manual(values = c("Men" = 17, "Women" = 16)) +
@@ -253,37 +258,6 @@ if (nrow(scatter_df) > 0) {
     theme(legend.position = "bottom")
 
   print(p_style_scatter)
-
-  if (requireNamespace("plotly", quietly = TRUE)) {
-    p_style_scatter_interactive <- ggplot(
-      scatter_df,
-      aes(
-        x = mean_pass_length,
-        y = pass_success_rate,
-        color = gender,
-        shape = gender,
-        size = shots,
-        text = hover_txt
-      )
-    ) +
-      geom_point(alpha = 0.75) +
-      labs(
-        title = "Interaktiv spilstilsfigur (hover for detaljer)",
-        x = "Afleveringslængde (gennemsnit pr. kamp)",
-        y = "Afleveringssikkerhed",
-        color = "Køn",
-        shape = "Køn",
-        size = "Skud pr. kamp"
-      ) +
-      scale_color_manual(values = c("Men" = "#1e88e5", "Women" = "#d81b60")) +
-      scale_shape_manual(values = c("Men" = 17, "Women" = 16)) +
-      scale_y_continuous(labels = scales::percent_format()) +
-      theme(legend.position = "bottom")
-
-    print(plotly::ggplotly(p_style_scatter_interactive, tooltip = "text"))
-  } else {
-    message("Installér 'plotly' for hover-plot: install.packages('plotly')")
-  }
 }
 
 
