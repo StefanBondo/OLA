@@ -1,138 +1,134 @@
 library(dplyr)
-library(tidyverse)
 library(readxl)
-library(rpart)
-library(randomForest)
-library(pROC)
+library(tidyverse)
 
-# --------------------------------------------------
+# ---------------------------
 # 1. Indlæs data
-# --------------------------------------------------
-shots_df_all_shots <- read_xlsx("shots_all.xlsx")
+# ---------------------------
+shots <- read_xlsx("shots_all.xlsx")
 
-# --------------------------------------------------
-# 2. Filtrer data
-# --------------------------------------------------
-shots_df_all_shots <- shots_df_all_shots %>%
+shots <- shots %>%
+  mutate(match_date = as.Date(match_date)) %>%
   filter(liga == "Superliga") %>%
-  filter(match_date >= as.Date("2024-07-01") &
-           match_date <= as.Date("2025-06-01"))
+  filter(match_date >= as.Date("2024-07-01"),
+         match_date <= as.Date("2025-06-01"))
 
-# --------------------------------------------------
-# 3. Rens SHOTBODYPART
-# --------------------------------------------------
-shots_df_all_shots <- shots_df_all_shots %>%
+# ---------------------------
+# 2. Feature engineering
+# ---------------------------
+shots <- shots %>%
   mutate(
-    SHOTBODYPART = case_when(
-      grepl("^\\[", SHOTBODYPART) & grepl("assist", SHOTBODYPART) ~ "assist",
-      grepl("^\\[", SHOTBODYPART) & grepl("goal", SHOTBODYPART) ~ "goal",
-      grepl("^\\[", SHOTBODYPART) & grepl("head", SHOTBODYPART) ~ "head_or_other",
-      grepl("^\\[", SHOTBODYPART) & grepl("intercep", SHOTBODYPART) ~ "interception",
-      grepl("^\\[", SHOTBODYPART) & grepl("opportun", SHOTBODYPART) ~ "opportunity",
-      grepl("^\\[", SHOTBODYPART) & grepl("shot_aft", SHOTBODYPART) ~ "shot_after_corner",
-      grepl("^\\[", SHOTBODYPART) & grepl("touch_in", SHOTBODYPART) ~ "touch_in_box",
-      SHOTBODYPART == "[]" ~ "unknown",
-      TRUE ~ SHOTBODYPART
-    )
-  )
-
-# --------------------------------------------------
-# 4. Lav forklarende variable
-# --------------------------------------------------
-
-# Hovedstød
-shots_df_all_shots <- shots_df_all_shots %>%
-  mutate(
-    hovedstød = ifelse(SHOTBODYPART == "head_or_other", 1, 0)
-  )
-
-# Mål
-shots_df_all_shots <- shots_df_all_shots %>%
-  mutate(
-    Mål = ifelse(!is.na(SECONDARYTYPE1) & SECONDARYTYPE1 == "goal", 1, 0)
-  )
-
-# Spilsituation
-shots_df_all_shots <- shots_df_all_shots %>%
-  mutate(
+    Mål = ifelse(
+      (!is.na(SHOTISGOAL) & SHOTISGOAL == 1) |
+        (!is.na(SECONDARYTYPE1) & SECONDARYTYPE1 == "goal"),
+      1, 0
+    ),
+    
+    # Kun gyldige Wyscout-koder (+ hoved fanget i defekt JSON); opportunity m.m. → NA
+    kropsdel_kendt = case_when(
+      SHOTBODYPART == "left_foot" ~ "left_foot",
+      SHOTBODYPART == "right_foot" ~ "right_foot",
+      SHOTBODYPART == "head_or_other" ~ "head",
+      grepl("^\\[", coalesce(SHOTBODYPART, "")) &
+        grepl("head", SHOTBODYPART, ignore.case = TRUE) ~ "head",
+      TRUE ~ NA_character_
+    ),
+    
+    hovedstød = ifelse(grepl("head", coalesce(SHOTBODYPART, "")), 1, 0),
+    
+    kropsdel_uden_hovedstød = case_when(
+      SHOTBODYPART == "left_foot" ~ "left_foot",
+      SHOTBODYPART == "right_foot" ~ "right_foot",
+      TRUE ~ "other"
+    ),
+    
+    kropsdel_med_hovedstød = case_when(
+      SHOTBODYPART == "left_foot" ~ "left_foot",
+      SHOTBODYPART == "right_foot" ~ "right_foot",
+      grepl("head", coalesce(SHOTBODYPART, "")) ~ "head",
+      TRUE ~ "other"
+    ),
+    
     Spilsituation = case_when(
-      grepl("corner", SECONDARYTYPE1) |
-        grepl("corner", SECONDARYTYPE2) |
-        grepl("corner", SECONDARYTYPE3) |
-        grepl("corner", SECONDARYTYPE4) ~ "Hjørne",
+      grepl("corner", coalesce(SECONDARYTYPE1, "")) |
+        grepl("corner", coalesce(SECONDARYTYPE2, "")) |
+        grepl("corner", coalesce(SECONDARYTYPE3, "")) |
+        grepl("corner", coalesce(SECONDARYTYPE4, "")) ~ "Hjørne",
       
-      grepl("free_kick", SECONDARYTYPE1) |
-        grepl("free_kick", SECONDARYTYPE2) |
-        grepl("free_kick", SECONDARYTYPE3) ~ "Frispark",
-      
-      grepl("throw_in", SECONDARYTYPE1) |
-        grepl("throw_in", SECONDARYTYPE2) |
-        grepl("throw_in", SECONDARYTYPE3) ~ "Indkast",
-      
-      grepl("head", SECONDARYTYPE1) |
-        grepl("head", SECONDARYTYPE2) ~ "Hovedstød",
+      grepl("free_kick", coalesce(SECONDARYTYPE1, "")) |
+        grepl("free_kick", coalesce(SECONDARYTYPE2, "")) |
+        grepl("free_kick", coalesce(SECONDARYTYPE3, "")) ~ "Frispark",
       
       TRUE ~ "Åbent spil"
-    )
-  )
-
-# Skudafstand
-shots_df_all_shots <- shots_df_all_shots %>%
-  mutate(
-    shot_distance = sqrt((100 - LOCATIONX)^2 + (50 - LOCATIONY)^2)
-  )
-
-# Skudvinkel i grader
-shots_df_all_shots <- shots_df_all_shots %>%
-  mutate(
-    goal_width = 7.32,
+    ),
+    
+    shot_distance = sqrt((100 - LOCATIONX)^2 + (50 - LOCATIONY)^2),
+    
     x = 100 - LOCATIONX,
     y = abs(LOCATIONY - 50),
-    shot_angle_deg = atan(goal_width * x / (x^2 + y^2 - (goal_width / 2)^2)),
+    shot_angle_deg = atan(7.32 * x / (x^2 + y^2 - (7.32 / 2)^2)),
     shot_angle_deg = ifelse(shot_angle_deg < 0, shot_angle_deg + pi, shot_angle_deg),
     shot_angle_deg = shot_angle_deg * 180 / pi
   )
 
-# Kropsdel til model
-shots_df_all_shots <- shots_df_all_shots %>%
+# ---------------------------
+# 3. Data til model
+# ---------------------------
+model_data <- shots %>%
+  select(
+    match_date,
+    Mål,
+    shot_distance,
+    shot_angle_deg,
+    hovedstød,
+    kropsdel_uden_hovedstød,
+    kropsdel_med_hovedstød,
+    Spilsituation,
+    kropsdel_kendt
+  ) %>%
+  drop_na(
+    match_date,
+    Mål,
+    shot_distance,
+    shot_angle_deg,
+    hovedstød,
+    kropsdel_uden_hovedstød,
+    kropsdel_med_hovedstød,
+    Spilsituation
+  ) %>%
   mutate(
-    body_part = case_when(
-      SHOTBODYPART == "left_foot" ~ "left_foot",
-      SHOTBODYPART == "right_foot" ~ "right_foot",
-      SHOTBODYPART == "head_or_other" ~ "head_or_other",
-      TRUE ~ "other"
+    kropsdel_uden_hovedstød = factor(kropsdel_uden_hovedstød),
+    kropsdel_med_hovedstød = factor(kropsdel_med_hovedstød),
+    Spilsituation = factor(Spilsituation),
+    kropsdel_kendt = factor(
+      kropsdel_kendt,
+      levels = c("left_foot", "right_foot", "head")
     )
   )
 
-# Fjern unødvendige kolonner
-shots_df_all_shots <- shots_df_all_shots %>%
-  select(-c(SECONDARYTYPE6, SECONDARYTYPE7, goal_width, x, y))
-
-# --------------------------------------------------
-# 5. Split i træning og test
-# --------------------------------------------------
+# ---------------------------
+# 4. Split train / test
+# ---------------------------
 set.seed(123)
 
-n <- nrow(shots_df_all_shots)
-train_index <- sample(1:n, size = 0.8 * n)
+n <- nrow(model_data)
+train_index <- sample(1:n, size = floor(0.8 * n))
 
-train_data <- shots_df_all_shots[train_index, ]
-test_data  <- shots_df_all_shots[-train_index, ]
+train_data <- model_data[train_index, ]
+test_data  <- model_data[-train_index, ]
 
-# --------------------------------------------------
-# 6. Gør kategoriske variable til faktorer
-# --------------------------------------------------
-train_data <- train_data %>%
-  mutate(
-    body_part = as.factor(body_part),
-    Spilsituation = as.factor(Spilsituation),
-    Mål = as.numeric(Mål)
-  )
+test_data$kropsdel_uden_hovedstød <- factor(
+  test_data$kropsdel_uden_hovedstød,
+  levels = levels(train_data$kropsdel_uden_hovedstød)
+)
 
-test_data <- test_data %>%
-  mutate(
-    body_part = as.factor(body_part),
-    Spilsituation = as.factor(Spilsituation),
-    Mål = as.numeric(Mål)
-  )
+test_data$kropsdel_med_hovedstød <- factor(
+  test_data$kropsdel_med_hovedstød,
+  levels = levels(train_data$kropsdel_med_hovedstød)
+)
+
+test_data$Spilsituation <- factor(
+  test_data$Spilsituation,
+  levels = levels(train_data$Spilsituation)
+)
 
