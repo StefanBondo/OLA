@@ -1,0 +1,651 @@
+## VIDEO TIL MÅL
+## https://superliga.dk/kampe/2021-2022/vejle-bk-ob-21-05-2022
+install.packages("av")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(jsonlite)
+  library(ggsoccer)
+  library(deldir)
+  library(av)
+  library(tibble)
+})
+
+# =========================================================
+# SELVSTÆNDIGT SCRIPT: VIDEO AF TRACKINGSEKVENS
+# 24:15 til 24:35
+# =========================================================
+
+# =========================================================
+# 1. INDSTILLINGER
+# =========================================================
+
+tracking_file <- "vbob.csv"
+meta_file <- "vbob-meta.json"
+
+# Tidspunkt: 24:15 til 24:35
+start_min <- 24
+start_sec <- 15
+duration_sec <- 20
+
+# Tracking-data er 25 fps, fordi game_clock går i spring på 0.04 sek
+fps_data <- 25
+
+# Beregn frames automatisk
+start_time_sec <- start_min * 60 + start_sec
+start_frame <- as.integer(start_time_sec * fps_data)   # 36375
+n_frames_video <- as.integer(duration_sec * fps_data)  # 500
+fps_video <- fps_data                                  # 25
+
+# Filnavne til output
+output_tracking_video <- "tracking_24_15_to_24_35.mp4"
+output_delaunay_video <- "delaunay_24_15_to_24_35.mp4"
+
+# Vis navne på spillere?
+show_player_names <- FALSE
+
+# Zoom ind omkring situationen?
+zoom_til_data <- FALSE
+
+# Fast zoom kan sættes her, ellers NULL
+custom_xlim <- NULL
+custom_ylim <- NULL
+
+# =========================================================
+# 2. BANEDIMENSIONER
+# =========================================================
+
+if (exists("pitch_impect")) {
+  pitch_dims <- pitch_impect
+} else {
+  pitch_dims <- pitch_statsbomb
+  pitch_dims$length <- 105
+  pitch_dims$width <- 68
+}
+
+if (is.null(pitch_dims$origin_x)) pitch_dims$origin_x <- -pitch_dims$length / 2
+if (is.null(pitch_dims$origin_y)) pitch_dims$origin_y <- -pitch_dims$width / 2
+
+pitch_xlim <- c(pitch_dims$origin_x, pitch_dims$origin_x + pitch_dims$length)
+pitch_ylim <- c(pitch_dims$origin_y, pitch_dims$origin_y + pitch_dims$width)
+pitch_window <- c(pitch_xlim[1], pitch_xlim[2], pitch_ylim[1], pitch_ylim[2])
+
+# =========================================================
+# 3. VALIDER INPUTFILER
+# =========================================================
+
+if (!file.exists(tracking_file)) {
+  stop("Trackingfilen blev ikke fundet: ", tracking_file)
+}
+
+if (!file.exists(meta_file)) {
+  stop("Metadatafilen blev ikke fundet: ", meta_file)
+}
+
+# =========================================================
+# 4. LÆS DATA
+# =========================================================
+
+tracking <- read.csv(
+  tracking_file,
+  header = FALSE,
+  stringsAsFactors = FALSE,
+  na.strings = c("", "NA")
+)
+
+meta <- fromJSON(meta_file)
+
+colnames(tracking)[1:2] <- c("frame_idx", "game_clock")
+tracking$frame_idx <- as.integer(tracking$frame_idx)
+tracking$game_clock <- suppressWarnings(as.numeric(tracking$game_clock))
+
+# Ekstra tjek af tid og frame
+message("Starttid i sekunder: ", start_time_sec)
+message("Startframe: ", start_frame)
+message("Antal frames i video: ", n_frames_video)
+message("Slutframe: ", start_frame + n_frames_video - 1)
+
+# =========================================================
+# 5. PLAYER LOOKUP
+# =========================================================
+
+player_lookup <- bind_rows(
+  meta$homePlayers %>%
+    transmute(ssiId, player_name = name, team = "Vejle BK"),
+  meta$awayPlayers %>%
+    transmute(ssiId, player_name = name, team = "Odense BK")
+) %>%
+  distinct(ssiId, .keep_all = TRUE)
+
+# =========================================================
+# 6. HJÆLPEFUNKTIONER
+# =========================================================
+
+get_frame_row <- function(frame_id, tracking_df) {
+  row <- tracking_df %>%
+    filter(frame_idx == frame_id)
+  
+  if (nrow(row) != 1) {
+    stop("Kunne ikke finde præcis én række for frame_idx = ", frame_id)
+  }
+  
+  row
+}
+
+clip_points_to_pitch <- function(pts, pitch_xlim, pitch_ylim, eps = 0.001) {
+  pts %>%
+    mutate(
+      x = pmin(pmax(x, pitch_xlim[1] + eps), pitch_xlim[2] - eps),
+      y = pmin(pmax(y, pitch_ylim[1] + eps), pitch_ylim[2] - eps)
+    )
+}
+
+frame_to_points <- function(frame_row, player_lookup_df) {
+  vals <- as.character(unlist(frame_row[1, ], use.names = FALSE))
+  
+  if (length(vals) < 68) {
+    stop("Frame-rækken er kortere end forventet.")
+  }
+  
+  home_ids <- vals[3:13]
+  away_ids <- vals[36:46]
+  
+  home_x <- suppressWarnings(as.numeric(vals[14:24]))
+  home_y <- suppressWarnings(as.numeric(vals[25:35]))
+  away_x <- suppressWarnings(as.numeric(vals[47:57]))
+  away_y <- suppressWarnings(as.numeric(vals[58:68]))
+  
+  pts <- tibble(
+    ssiId = c(home_ids, away_ids),
+    x = c(home_x, away_x),
+    y = c(home_y, away_y)
+  ) %>%
+    left_join(player_lookup_df, by = "ssiId") %>%
+    mutate(
+      player_name = ifelse(is.na(player_name), ssiId, player_name),
+      team = ifelse(is.na(team), "Ukendt", team)
+    )
+  
+  as.data.frame(pts)
+}
+
+frame_ball <- function(frame_row) {
+  vals <- as.character(unlist(frame_row[1, ], use.names = FALSE))
+  
+  ball_x <- if (length(vals) >= 69) suppressWarnings(as.numeric(vals[69])) else NA_real_
+  ball_y <- if (length(vals) >= 70) suppressWarnings(as.numeric(vals[70])) else NA_real_
+  
+  data.frame(x = ball_x, y = ball_y)
+}
+
+get_frame_sequence <- function(start_frame, tracking_df, n_frames = 75) {
+  all_frames <- sort(unique(tracking_df$frame_idx))
+  
+  if (!(start_frame %in% all_frames)) {
+    stop("start_frame findes ikke i tracking-data.")
+  }
+  
+  start_pos <- match(start_frame, all_frames)
+  end_pos <- min(start_pos + n_frames - 1, length(all_frames))
+  
+  all_frames[start_pos:end_pos]
+}
+
+compute_view_window <- function(
+    pts,
+    ball = NULL,
+    pitch_xlim,
+    pitch_ylim,
+    zoom_til_data = FALSE,
+    xlim = NULL,
+    ylim = NULL,
+    pad_zoom = 12,
+    pad_view = 0
+) {
+  ball_xy <- if (!is.null(ball) &&
+                 nrow(ball) == 1 &&
+                 all(is.finite(c(ball$x, ball$y)))) {
+    c(ball$x, ball$y)
+  } else {
+    numeric(0)
+  }
+  
+  if (isTRUE(zoom_til_data) && is.null(xlim) && is.null(ylim)) {
+    xv <- pts$x
+    yv <- pts$y
+    
+    if (length(ball_xy) == 2) {
+      xv <- c(xv, ball_xy[1])
+      yv <- c(yv, ball_xy[2])
+    }
+    
+    xr <- range(xv, na.rm = TRUE) + c(-pad_zoom, pad_zoom)
+    yr <- range(yv, na.rm = TRUE) + c(-pad_zoom, pad_zoom)
+    
+    xr[1] <- max(xr[1], pitch_xlim[1])
+    xr[2] <- min(xr[2], pitch_xlim[2])
+    yr[1] <- max(yr[1], pitch_ylim[1])
+    yr[2] <- min(yr[2], pitch_ylim[2])
+  } else {
+    xr <- if (is.null(xlim)) pitch_xlim + c(-pad_view, pad_view) else xlim
+    yr <- if (is.null(ylim)) pitch_ylim + c(-pad_view, pad_view) else ylim
+  }
+  
+  list(xlim = xr, ylim = yr)
+}
+
+# =========================================================
+# 7. PLOTFUNKTIONER
+# =========================================================
+
+plot_tracking_frame <- function(
+    pts,
+    titel = "",
+    ball = NULL,
+    pitch_dims,
+    pitch_xlim,
+    pitch_ylim,
+    zoom_til_data = FALSE,
+    xlim = NULL,
+    ylim = NULL,
+    show_player_names = FALSE
+) {
+  vw <- compute_view_window(
+    pts = pts,
+    ball = ball,
+    pitch_xlim = pitch_xlim,
+    pitch_ylim = pitch_ylim,
+    zoom_til_data = zoom_til_data,
+    xlim = xlim,
+    ylim = ylim
+  )
+  
+  p <- ggplot() +
+    annotate_pitch(
+      dimensions = pitch_dims,
+      fill = "#1b5e20",
+      colour = "white",
+      limits = FALSE
+    ) +
+    geom_point(
+      data = pts,
+      aes(x = x, y = y, fill = team),
+      shape = 21,
+      color = "black",
+      size = 5
+    ) +
+    ggtitle(titel) +
+    theme_pitch(aspect_ratio = NULL) +
+    scale_x_continuous(limits = vw$xlim, expand = c(0, 0)) +
+    scale_y_continuous(limits = vw$ylim, expand = c(0, 0)) +
+    coord_fixed(ratio = 1)
+  
+  if (show_player_names) {
+    p <- p +
+      geom_text(
+        data = pts,
+        aes(x = x, y = y, label = player_name),
+        size = 3,
+        vjust = -1,
+        color = "white"
+      )
+  }
+  
+  if (!is.null(ball) && nrow(ball) == 1 && all(is.finite(c(ball$x, ball$y)))) {
+    p <- p +
+      geom_point(
+        data = ball,
+        aes(x = x, y = y),
+        inherit.aes = FALSE,
+        shape = 21,
+        fill = "white",
+        color = "black",
+        stroke = 1.2,
+        size = 4,
+        show.legend = FALSE
+      )
+  }
+  
+  p
+}
+
+plot_delaunay_frame <- function(
+    pts,
+    titel = "",
+    ball = NULL,
+    pitch_dims,
+    pitch_xlim,
+    pitch_ylim,
+    zoom_til_data = FALSE,
+    xlim = NULL,
+    ylim = NULL,
+    show_player_names = FALSE
+) {
+  tri_local <- deldir(
+    pts$x, pts$y,
+    rw = c(pitch_xlim[1], pitch_xlim[2], pitch_ylim[1], pitch_ylim[2])
+  )
+  seg <- tri_local$dirsgs
+  
+  vw <- compute_view_window(
+    pts = pts,
+    ball = ball,
+    pitch_xlim = pitch_xlim,
+    pitch_ylim = pitch_ylim,
+    zoom_til_data = zoom_til_data,
+    xlim = xlim,
+    ylim = ylim
+  )
+  
+  p <- ggplot() +
+    annotate_pitch(
+      dimensions = pitch_dims,
+      fill = "#1b5e20",
+      colour = "white",
+      limits = FALSE
+    ) +
+    geom_segment(
+      data = seg,
+      aes(x = x1, y = y1, xend = x2, yend = y2),
+      color = "white",
+      linewidth = 0.5
+    ) +
+    geom_point(
+      data = pts,
+      aes(x = x, y = y, fill = team),
+      shape = 21,
+      color = "black",
+      size = 5
+    ) +
+    ggtitle(titel) +
+    theme_pitch(aspect_ratio = NULL) +
+    scale_x_continuous(limits = vw$xlim, expand = c(0, 0)) +
+    scale_y_continuous(limits = vw$ylim, expand = c(0, 0)) +
+    coord_fixed(ratio = 1)
+  
+  if (show_player_names) {
+    p <- p +
+      geom_text(
+        data = pts,
+        aes(x = x, y = y, label = player_name),
+        size = 3,
+        vjust = -1,
+        color = "white"
+      )
+  }
+  
+  if (!is.null(ball) && nrow(ball) == 1 && all(is.finite(c(ball$x, ball$y)))) {
+    p <- p +
+      geom_point(
+        data = ball,
+        aes(x = x, y = y),
+        inherit.aes = FALSE,
+        shape = 21,
+        fill = "white",
+        color = "black",
+        stroke = 1.2,
+        size = 4,
+        show.legend = FALSE
+      )
+  }
+  
+  p
+}
+
+# =========================================================
+# 8. VIDEOFUNKTIONER
+# =========================================================
+
+make_tracking_video <- function(
+    start_frame,
+    tracking_df,
+    player_lookup_df,
+    pitch_dims,
+    pitch_xlim,
+    pitch_ylim,
+    n_frames = 75,
+    output_file = "tracking_sequence.mp4",
+    fps = 10,
+    zoom_til_data = FALSE,
+    xlim = NULL,
+    ylim = NULL,
+    show_player_names = FALSE
+) {
+  frame_ids <- get_frame_sequence(
+    start_frame = start_frame,
+    tracking_df = tracking_df,
+    n_frames = n_frames
+  )
+  
+  if (length(frame_ids) < 2) {
+    stop("For få frames fundet til at lave video.")
+  }
+  
+  message("Genererer tracking-frames: ", length(frame_ids))
+  
+  out_dir <- file.path(tempdir(), "tracking_video_frames")
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  image_files <- character(length(frame_ids))
+  
+  for (i in seq_along(frame_ids)) {
+    fr <- frame_ids[i]
+    
+    frame_row <- get_frame_row(fr, tracking_df)
+    
+    pts <- frame_to_points(frame_row, player_lookup_df) %>%
+      clip_points_to_pitch(pitch_xlim, pitch_ylim)
+    
+    ball <- frame_ball(frame_row)
+    
+    clock_txt <- if (!is.na(frame_row$game_clock[1])) {
+      paste0(" | game_clock: ", round(frame_row$game_clock[1], 2))
+    } else {
+      ""
+    }
+    
+    titel <- paste0("Tracking | Frame ", fr, clock_txt)
+    
+    p <- plot_tracking_frame(
+      pts = pts,
+      titel = titel,
+      ball = ball,
+      pitch_dims = pitch_dims,
+      pitch_xlim = pitch_xlim,
+      pitch_ylim = pitch_ylim,
+      zoom_til_data = zoom_til_data,
+      xlim = xlim,
+      ylim = ylim,
+      show_player_names = show_player_names
+    )
+    
+    file_i <- file.path(out_dir, sprintf("frame_%04d.png", i))
+    image_files[i] <- file_i
+    
+    ggsave(
+      filename = file_i,
+      plot = p,
+      width = 10,
+      height = 7,
+      dpi = 150
+    )
+  }
+  
+  message("Sammensætter tracking-video ...")
+  
+  av::av_encode_video(
+    input = image_files,
+    output = output_file,
+    framerate = fps
+  )
+  
+  message("Tracking-video gemt som: ", normalizePath(output_file))
+}
+
+make_delaunay_video <- function(
+    start_frame,
+    tracking_df,
+    player_lookup_df,
+    pitch_dims,
+    pitch_xlim,
+    pitch_ylim,
+    n_frames = 75,
+    output_file = "delaunay_sequence.mp4",
+    fps = 10,
+    zoom_til_data = FALSE,
+    xlim = NULL,
+    ylim = NULL,
+    show_player_names = FALSE
+) {
+  frame_ids <- get_frame_sequence(
+    start_frame = start_frame,
+    tracking_df = tracking_df,
+    n_frames = n_frames
+  )
+  
+  if (length(frame_ids) < 2) {
+    stop("For få frames fundet til at lave video.")
+  }
+  
+  message("Genererer Delaunay-frames: ", length(frame_ids))
+  
+  out_dir <- file.path(tempdir(), "delaunay_video_frames")
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  image_files <- character(length(frame_ids))
+  
+  for (i in seq_along(frame_ids)) {
+    fr <- frame_ids[i]
+    
+    frame_row <- get_frame_row(fr, tracking_df)
+    
+    pts <- frame_to_points(frame_row, player_lookup_df) %>%
+      clip_points_to_pitch(pitch_xlim, pitch_ylim)
+    
+    ball <- frame_ball(frame_row)
+    
+    clock_txt <- if (!is.na(frame_row$game_clock[1])) {
+      paste0(" | game_clock: ", round(frame_row$game_clock[1], 2))
+    } else {
+      ""
+    }
+    
+    titel <- paste0("Delaunay | Frame ", fr, clock_txt)
+    
+    p <- plot_delaunay_frame(
+      pts = pts,
+      titel = titel,
+      ball = ball,
+      pitch_dims = pitch_dims,
+      pitch_xlim = pitch_xlim,
+      pitch_ylim = pitch_ylim,
+      zoom_til_data = zoom_til_data,
+      xlim = xlim,
+      ylim = ylim,
+      show_player_names = show_player_names
+    )
+    
+    file_i <- file.path(out_dir, sprintf("frame_%04d.png", i))
+    image_files[i] <- file_i
+    
+    ggsave(
+      filename = file_i,
+      plot = p,
+      width = 10,
+      height = 7,
+      dpi = 150
+    )
+  }
+  
+  message("Sammensætter Delaunay-video ...")
+  
+  av::av_encode_video(
+    input = image_files,
+    output = output_file,
+    framerate = fps
+  )
+  
+  message("Delaunay-video gemt som: ", normalizePath(output_file))
+}
+
+# =========================================================
+# 9. TESTPLOT AF ÉN FRAME
+# =========================================================
+
+message("Laver testplot af startframe ...")
+
+test_row <- get_frame_row(start_frame, tracking)
+test_pts <- frame_to_points(test_row, player_lookup) %>%
+  clip_points_to_pitch(pitch_xlim, pitch_ylim)
+test_ball <- frame_ball(test_row)
+
+p_test_tracking <- plot_tracking_frame(
+  pts = test_pts,
+  titel = paste0("Testplot tracking | Frame ", start_frame),
+  ball = test_ball,
+  pitch_dims = pitch_dims,
+  pitch_xlim = pitch_xlim,
+  pitch_ylim = pitch_ylim,
+  zoom_til_data = zoom_til_data,
+  xlim = custom_xlim,
+  ylim = custom_ylim,
+  show_player_names = show_player_names
+)
+
+p_test_delaunay <- plot_delaunay_frame(
+  pts = test_pts,
+  titel = paste0("Testplot Delaunay | Frame ", start_frame),
+  ball = test_ball,
+  pitch_dims = pitch_dims,
+  pitch_xlim = pitch_xlim,
+  pitch_ylim = pitch_ylim,
+  zoom_til_data = zoom_til_data,
+  xlim = custom_xlim,
+  ylim = custom_ylim,
+  show_player_names = show_player_names
+)
+
+print(p_test_tracking)
+print(p_test_delaunay)
+
+# =========================================================
+# 10. GENERÉR VIDEOER
+# =========================================================
+
+make_tracking_video(
+  start_frame = start_frame,
+  tracking_df = tracking,
+  player_lookup_df = player_lookup,
+  pitch_dims = pitch_dims,
+  pitch_xlim = pitch_xlim,
+  pitch_ylim = pitch_ylim,
+  n_frames = n_frames_video,
+  output_file = output_tracking_video,
+  fps = fps_video,
+  zoom_til_data = zoom_til_data,
+  xlim = custom_xlim,
+  ylim = custom_ylim,
+  show_player_names = show_player_names
+)
+
+make_delaunay_video(
+  start_frame = start_frame,
+  tracking_df = tracking,
+  player_lookup_df = player_lookup,
+  pitch_dims = pitch_dims,
+  pitch_xlim = pitch_xlim,
+  pitch_ylim = pitch_ylim,
+  n_frames = n_frames_video,
+  output_file = output_delaunay_video,
+  fps = fps_video,
+  zoom_til_data = zoom_til_data,
+  xlim = custom_xlim,
+  ylim = custom_ylim,
+  show_player_names = show_player_names
+)
+
+# =========================================================
+# 11. FÆRDIG
+# =========================================================
+
+message("Færdig. Begge videoer er genereret.")
